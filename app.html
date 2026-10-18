@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Salesforce OG Debugger</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="logs.css">
+  <link rel="stylesheet" href="data.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.4"/><circle cx="5" cy="18" r="2.4"/><circle cx="19" cy="12" r="2.8"/><path d="M7.2 6.8 16.4 11M7.2 17.2 16.4 13" fill="none" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span>Salesforce OG Debugger</span>
+    </div>
+    <nav class="views" role="tablist" aria-label="View">
+      <button role="tab" data-app-view="flow" aria-selected="true">Code Flow</button>
+      <button role="tab" data-app-view="logs" aria-selected="false" id="nav-logs" disabled>Debug Logs</button>
+      <button role="tab" data-app-view="data" aria-selected="false" id="nav-data" disabled>Data Export</button>
+    </nav>
+    <div class="org" id="org"></div>
+    <div class="scan" id="scan">
+      <span class="scan-dot"></span>
+      <span class="scan-text" id="scan-text">Not connected</span>
+      <span class="scan-bar"><span id="scan-bar-fill"></span></span>
+    </div>
+    <button class="ghost" id="rescan" hidden title="Fetch classes changed since the last scan">Rescan</button>
+  </header>
+
+  <main class="layout" id="view-flow">
+    <aside class="picker">
+      <div class="mode-tabs" role="tablist">
+        <button role="tab" data-pick="field" aria-selected="true">Field</button>
+        <button role="tab" data-pick="method" aria-selected="false">Method</button>
+      </div>
+      <div class="pick-panel" id="panel-field">
+        <section class="pick pick-top">
+          <div class="pick-head"><span class="step">1</span> Object</div>
+          <input type="search" id="obj-search" placeholder="Search objects" autocomplete="off" spellcheck="false">
+          <ul class="list" id="obj-list" role="listbox"></ul>
+        </section>
+        <section class="pick pick-bottom">
+          <div class="pick-head"><span class="step">2</span> Field <span class="pick-sub" id="field-of"></span></div>
+          <input type="search" id="field-search" placeholder="Search fields" autocomplete="off" spellcheck="false" disabled>
+          <ul class="list" id="field-list" role="listbox"></ul>
+        </section>
+      </div>
+      <div class="pick-panel" id="panel-method" hidden>
+        <section class="pick pick-top">
+          <div class="pick-head"><span class="step">1</span> Class</div>
+          <input type="search" id="class-search" placeholder="Search classes" autocomplete="off" spellcheck="false">
+          <ul class="list" id="class-list" role="listbox"></ul>
+        </section>
+        <section class="pick pick-bottom">
+          <div class="pick-head"><span class="step">2</span> Method <span class="pick-sub" id="method-of"></span></div>
+          <input type="search" id="method-search" placeholder="Search methods" autocomplete="off" spellcheck="false" disabled>
+          <ul class="list" id="method-list" role="listbox"></ul>
+        </section>
+      </div>
+      <section class="opts">
+        <label><input type="checkbox" id="opt-possible"> Show possible matches</label>
+        <label><input type="checkbox" id="opt-tests"> Include test classes</label>
+        <button class="link" id="clear-cache" hidden>Clear cached code</button>
+      </section>
+    </aside>
+
+    <section class="flow">
+      <div class="flow-head" id="flow-head" hidden>
+        <div class="flow-title">
+          <h1 id="flow-title"></h1>
+          <span class="type-pill" id="flow-type"></span>
+        </div>
+        <div class="chips" id="chips"></div>
+        <div class="flow-tools">
+          <div class="tabs" role="tablist">
+            <button role="tab" data-view="tree" aria-selected="true">Call tree</button>
+            <button role="tab" data-view="paths" aria-selected="false">Entry paths</button>
+          </div>
+          <button class="ghost small" id="expand-all">Expand all</button>
+          <button class="ghost small" id="collapse-all">Collapse</button>
+        </div>
+      </div>
+      <div class="flow-body" id="flow-body">
+        <div class="empty">
+          <div class="empty-art" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <p class="empty-title">Pick an object, then a field</p>
+          <p class="empty-sub">You'll see every Apex method that reads or writes it, and the code paths that lead there.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="code" id="code">
+      <div class="code-empty">Select a node to see its source</div>
+    </section>
+  </main>
+
+  <main class="lg" id="view-logs" hidden></main>
+
+  <main class="dx" id="view-data" hidden></main>
+
+  <footer class="credits" aria-label="About this extension">
+    <div class="credits-brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.4"/><circle cx="5" cy="18" r="2.4"/><circle cx="19" cy="12" r="2.8"/><path d="M7.2 6.8 16.4 11M7.2 17.2 16.4 13" fill="none" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <span>Salesforce OG Debugger</span>
+      <span class="credits-ver" id="app-version" title="Extension version">v1.0.0</span>
+    </div>
+    <span class="credits-sep" aria-hidden="true"></span>
+    <span class="credits-by" tabindex="0" aria-describedby="about-card">Developed by <b>Keshav Yadav</b>
+      <span class="about-card" id="about-card" role="tooltip">
+        <span class="about-og">
+          <span class="about-kicker">Salesforce OG Debugger</span>
+          <span class="about-title">Be the <em>Original Gangster</em> of Salesforce debugging.</span>
+          <span class="about-text">Don’t let bugs boss you around. Trace every field, follow every log, query any record, and walk into stand-up already knowing the root cause.</span>
+          <span class="about-chips"><span>Code Flow</span><span>Debug Logs</span><span>Data Export</span></span>
+        </span>
+        <span class="about-me">
+          <span class="about-avatar" aria-hidden="true">KY</span>
+          <span class="about-me-text">
+            <b>Keshav Yadav</b>
+            <span class="about-role">Salesforce Developer</span>
+            <span class="about-text">A Salesforce developer on a mission to cut the hours our community loses to debugging, so every developer gets back to building, not bug-hunting.</span>
+          </span>
+        </span>
+        <span class="about-foot">Built with ☕ for the Salesforce developer community</span>
+      </span>
+    </span>
+    <nav class="credits-links" aria-label="Contact the developer">
+      <a class="credits-link" href="tel:6268471199" title="Call 6268471199" aria-label="Call Keshav Yadav at 6268471199">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25c1.1.37 2.3.57 3.6.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1z"/></svg>
+        <span>6268471199</span>
+      </a>
+      <a class="credits-link" href="mailto:keshavupendra03@gmail.com?subject=Salesforce%20OG%20Debugger" title="Email keshavupendra03@gmail.com" aria-label="Email Keshav Yadav">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="stroke"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7 8 6 8-6"/></svg>
+        <span>keshavupendra03@gmail.com</span>
+      </a>
+      <a class="credits-link li" href="https://www.linkedin.com/in/keshav-yadav-40366b205" target="_blank" rel="noopener noreferrer" title="Keshav Yadav on LinkedIn" aria-label="Keshav Yadav on LinkedIn (opens in a new tab)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.45 20.45h-3.55v-5.57c0-1.33-.03-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.12 2.06 2.06 0 0 1 0 4.12zM7.12 20.45H3.56V9h3.56v11.45z"/></svg>
+        <span>LinkedIn</span>
+      </a>
+    </nav>
+  </footer>
+
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay-card" id="overlay-card"></div>
+  </div>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

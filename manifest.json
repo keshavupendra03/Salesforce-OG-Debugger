@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Salesforce OG Debugger",
+  "short_name": "OG Debugger",
+  "version": "1.0.0",
+  "description": "Trace where Apex reads or writes a field, and debug Salesforce logs with execution paths, merged sessions and limits.",
+  "action": {
+    "default_title": "Open Salesforce OG Debugger for this org",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["cookies"],
+  "host_permissions": [
+    "https://*.salesforce.com/*",
+    "https://*.force.com/*",
+    "https://*.cloudforce.com/*",
+    "https://*.visualforce.com/*",
+    "https://*.salesforce-setup.com/*",
+    "https://*.salesforce.mil/*",
+    "https://*.cloudforce.mil/*",
+    "https://*.sfcrmproducts.cn/*"
+  ]
+}
