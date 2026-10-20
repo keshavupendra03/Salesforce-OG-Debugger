@@ -12,7 +12,10 @@ const wait = (ms, signal) => new Promise((resolve, reject) => {
 
 const F = (name, label, type, extra = {}) => ({ name, label, type, relationshipName: null, referenceTo: [], picklist: [], ...extra });
 const ref = (name, label, rel, to) => F(name, label, 'reference', { relationshipName: rel, referenceTo: [to] });
-const pick = (name, label, values) => F(name, label, 'picklist', { picklist: values });
+// values: 'Same' or ['ApiName', 'Label'] when the label differs, like real orgs often do
+const pick = (name, label, values) => F(name, label, 'picklist', {
+  picklist: values.map((v) => (Array.isArray(v) ? { value: v[0], label: v[1] } : { value: v, label: v })),
+});
 const audit = () => [
   F('CreatedDate', 'Created Date', 'datetime'), F('LastModifiedDate', 'Last Modified Date', 'datetime'),
   ref('CreatedById', 'Created By ID', 'CreatedBy', 'User'), ref('OwnerId', 'Owner ID', 'Owner', 'User'),
@@ -26,7 +29,7 @@ const SCHEMA = {
     prefix: '001',
     fields: [
       F('Id', 'Account ID', 'id'), F('Name', 'Account Name', 'string'), pick('Industry', 'Industry', INDUSTRIES),
-      pick('Type', 'Account Type', ['Customer', 'Prospect', 'Partner']), pick('Rating', 'Account Rating', ['Hot', 'Warm', 'Cold']),
+      pick('Type', 'Account Type', [['Customer', 'Customer - Direct'], 'Prospect', ['Partner', 'Channel Partner / Reseller']]), pick('Rating', 'Account Rating', [['Hot', 'Hot (ready to buy)'], ['Warm', 'Warm (interested)'], ['Cold', 'Cold (no interest yet)']]),
       F('AnnualRevenue', 'Annual Revenue', 'currency'), F('NumberOfEmployees', 'Employees', 'int'), F('Website', 'Website', 'url'),
       F('BillingCity', 'Billing City', 'string'), F('BillingCountry', 'Billing Country', 'string'), F('IsActive__c', 'Active', 'boolean'),
       ref('ParentId', 'Parent Account ID', 'Parent', 'Account'), ...audit(),
@@ -56,7 +59,7 @@ const SCHEMA = {
     prefix: '00Q',
     fields: [
       F('Id', 'Lead ID', 'id'), F('FirstName', 'First Name', 'string'), F('LastName', 'Last Name', 'string'), F('Company', 'Company', 'string'),
-      F('Email', 'Email', 'email'), pick('Status', 'Lead Status', ['Open', 'Working', 'Qualified', 'Unqualified']),
+      F('Email', 'Email', 'email'), pick('Status', 'Lead Status', [['Open', 'Open - Not Contacted'], ['Working', 'Working - Contacted'], ['Qualified', 'Closed - Converted'], ['Unqualified', 'Closed - Not Converted']]),
       pick('Industry', 'Industry', INDUSTRIES), F('IsConverted', 'Converted', 'boolean'), ...audit(),
     ],
     children: [],
@@ -185,7 +188,7 @@ export class DemoDataBackend {
   async listObjects({ tooling = false } = {}) {
     await wait(60);
     const s = tooling ? TOOLING : SCHEMA;
-    return Object.keys(s).map((name) => ({ name, label: name.replace(/([a-z])([A-Z])/g, '$1 $2'), custom: false }));
+    return Object.keys(s).map((name) => ({ name, label: name.replace(/([a-z])([A-Z])/g, '$1 $2'), custom: false, keyPrefix: s[name].prefix }));
   }
 
   async describe(name, { tooling = false } = {}) {
@@ -518,3 +521,6 @@ function dateRange(lit) {
     default: throw new SoqlError(`the date literal ${lit} isn’t supported in the demo org`);
   }
 }
+
+// for the demo All data page (src/record/record-backend.js)
+export { SCHEMA as DEMO_SCHEMA, makeId as demoId };

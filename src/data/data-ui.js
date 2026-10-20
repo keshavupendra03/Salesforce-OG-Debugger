@@ -518,7 +518,7 @@ export function mountData(root, backend) {
     placeSuggest();
   }
 
-  const KIND_ICON = { all: '✱', field: 'F', rel: '→', object: 'O', kw: 'K', value: 'V', date: 'D', fn: 'ƒ', op: '≡', snippet: '⌘' };
+  const KIND_ICON = { all: '✱', field: 'F', rel: '→', child: '↳', object: 'O', kw: 'K', value: 'V', date: 'D', fn: 'ƒ', op: '≡', snippet: '⌘' };
   function drawSuggest() {
     const s = S.sugg;
     ed.sugg.hidden = false;
@@ -534,10 +534,18 @@ export function mountData(root, backend) {
       return h('li', {
         role: 'option', id: `dx-sg-${i}`, class: `dx-sg k-${it.kind}${i === s.sel ? ' sel' : ''}`, 'aria-selected': String(i === s.sel),
         onmousedown: (e) => { e.preventDefault(); accept(it); },
-      }, h('span', { class: 'dx-sg-icon', 'aria-hidden': 'true' }, KIND_ICON[it.kind] || '·'), h('span', { class: 'dx-sg-label' }, label), it.detail ? h('span', { class: 'dx-sg-detail' }, it.detail) : null);
+      }, h('span', { class: 'dx-sg-icon', 'aria-hidden': 'true' }, KIND_ICON[it.kind] || '·'), h('span', { class: 'dx-sg-label' }, label),
+      it.valueLabel ? picklistLabel(it.valueLabel, partial) : it.detail ? h('span', { class: 'dx-sg-detail' }, it.detail) : null);
     }), h('li', { class: 'dx-sg-foot', 'aria-hidden': 'true' }, '↑↓ choose · Enter / Tab insert · Esc close'));
     ed.ta.setAttribute('aria-activedescendant', `dx-sg-${s.sel}`);
     ed.sugg.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+  }
+
+  // a picklist value's label next to its API name, e.g.  Qualified   Label: Closed - Converted
+  function picklistLabel(text, partial) {
+    const at = partial ? text.toLowerCase().indexOf(partial) : -1;
+    const shown = at >= 0 ? [text.slice(0, at), h('mark', {}, text.slice(at, at + partial.length)), text.slice(at + partial.length)] : text;
+    return h('span', { class: 'dx-sg-detail dx-sg-plabel', title: `Label: ${text}` }, h('span', { class: 'dx-sg-tag' }, 'Label'), h('span', { class: 'dx-sg-ptext' }, shown));
   }
 
   function placeSuggest() {
@@ -762,7 +770,8 @@ export function mountData(root, backend) {
       ], { align: 'end' }),
     }, h('span', { 'aria-hidden': 'true' }, '⧉'), 'Copy ▾');
     const dlBtn = h('button', { class: 'ghost small dx-tb', title: 'Download the rows as a CSV file', onclick: download }, h('span', { 'aria-hidden': 'true' }, '⤓'), 'CSV');
-    tbl.delBtn = h('button', { class: 'ghost small dx-tb dx-del', hidden: true, onclick: confirmDelete });
+    // always shown, so people know records can be deleted from here; without a selection it explains how
+    tbl.delBtn = h('button', { class: 'ghost small dx-tb dx-del', onclick: confirmDelete });
 
     tbl.wrap = h('div', { class: 'dx-tablewrap', tabindex: '0', 'aria-label': 'Query results' });
     el.results.replaceChildren(
@@ -773,8 +782,9 @@ export function mountData(root, backend) {
       filterBtn.classList.toggle('on', !!r.filter);
       tbl.status.replaceChildren(...statusParts(r));
       const n = r.selected.size;
-      tbl.delBtn.hidden = !n;
-      tbl.delBtn.textContent = `Delete ${num(n)}`;
+      tbl.delBtn.classList.toggle('idle', !n);
+      tbl.delBtn.replaceChildren(h('span', { 'aria-hidden': 'true' }, '🗑'), n ? `Delete ${num(n)}` : 'Delete');
+      tbl.delBtn.title = n ? `Delete the ${num(n)} selected record${n === 1 ? '' : 's'}` : 'Delete records: tick the rows you want to delete first';
     }
     computeView();
     drawTableShell();
@@ -1015,7 +1025,18 @@ export function mountData(root, backend) {
   function confirmDelete() {
     const r = tbl.r;
     const ids = [...r.selected];
-    if (!ids.length) return;
+    if (!ids.length) {
+      // nothing selected yet: say how, and point at the checkboxes
+      if (r.tooling) return toast('Tooling API records can’t be deleted here. Untick Tooling API to delete data records.', 'error');
+      if (!tbl.canDelete) return toast('Add Id to the SELECT list (e.g. SELECT Id, Name …), run it, then tick the rows to delete', 'error');
+      if (!r.rows.length) return toast('No rows to delete. Run a query that returns records first.', 'error');
+      toast('Select the rows to delete first: tick their checkboxes (Shift+click for a range, or the header box for all)', 'info');
+      tbl.wrap.classList.remove('dx-sel-hint');
+      void tbl.wrap.offsetWidth;
+      tbl.wrap.classList.add('dx-sel-hint');
+      setTimeout(() => tbl.wrap?.classList.remove('dx-sel-hint'), 2400);
+      return;
+    }
     const types = new Map();
     for (const row of r.rows) if (r.selected.has(row.Id)) types.set(row.__type || 'record', (types.get(row.__type || 'record') || 0) + 1);
     const summary = [...types].map(([t, n]) => `${num(n)} ${t}`).join(', ');

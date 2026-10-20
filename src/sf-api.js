@@ -34,11 +34,12 @@ export class SfApi {
   }
 
   // onProgress(bytesReceived, totalBytes|null) is called while a text body streams in.
-  async request(path, { method = 'GET', body, text = false, onProgress, signal } = {}) {
+  async request(path, { method = 'GET', body, text = false, onProgress, signal, headers: extra } = {}) {
     let res;
     try {
       const headers = { Authorization: `Bearer ${this.sid}`, Accept: text ? 'text/plain, */*' : 'application/json' };
       if (body !== undefined) headers['Content-Type'] = 'application/json';
+      if (extra) Object.assign(headers, extra);
       res = await fetch(this.base + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, signal });
     } catch (e) {
       if (e?.name === 'AbortError') throw e;
@@ -47,13 +48,20 @@ export class SfApi {
     if (!res.ok) {
       let msg = `${res.status} ${res.statusText}`;
       let code;
+      let fields = [];
       try {
         const body = await res.json();
-        if (Array.isArray(body) && body[0]?.message) { code = body[0].errorCode; msg = `${code}: ${body[0].message}`; }
+        if (Array.isArray(body) && body[0]?.message) {
+          code = body[0].errorCode;
+          msg = body.map((e) => `${e.errorCode}: ${e.message}`).join('\n');
+          fields = body.flatMap((e) => e.fields || []);
+        }
       } catch { /* not JSON */ }
       if (res.status === 401) msg += ' — your Salesforce session may have expired. Refresh the Salesforce tab and reopen Salesforce OG Debugger.';
       if (code === 'API_DISABLED_FOR_ORG' || code === 'API_CURRENTLY_DISABLED') msg += ' — your user needs the "API Enabled" permission.';
-      throw new SfError(msg, res.status, code);
+      const err = new SfError(msg, res.status, code);
+      err.fields = fields; // which fields a save failed on, when Salesforce says
+      throw err;
     }
     if (res.status === 204) return null;
     if (text && onProgress && res.body) return readText(res, onProgress);

@@ -72,14 +72,14 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .topbar {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   height: 48px;
   padding: 0 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   flex: none;
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 14px; letter-spacing: -.01em; }
+.brand { flex: none; white-space: nowrap; display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 14px; letter-spacing: -.01em; }
 .brand svg { width: 22px; height: 22px; fill: var(--accent); stroke: var(--accent); }
 .org {
   font-family: var(--mono);
@@ -88,13 +88,16 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
   padding: 3px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  max-width: 340px;
+  max-width: 260px;
+  min-width: 60px;
+  flex-shrink: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .org:empty { display: none; }
-.scan { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--muted); font-size: 12px; }
+.scan { display: flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.scan-text { overflow: hidden; text-overflow: ellipsis; }
 .scan-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
 .scan[data-state="busy"] .scan-dot { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
 .scan[data-state="ready"] .scan-dot { background: #16a34a; }
@@ -546,6 +549,10 @@ button.chip:hover { color: var(--text); }
 .fun-e { display: inline-block; font-style: normal; font-weight: 400; line-height: 1; user-select: none; -webkit-user-select: none; pointer-events: none; text-decoration: none; -webkit-text-fill-color: initial; animation: fun-in .35s cubic-bezier(.2, .9, .3, 1.5); }
 .fun-e.start { margin-right: .35em; }
 .fun-e.end { margin-left: .35em; }
+/* FBI Search: "🎯 Prime suspect" / "😴 off duty" read as small case-file tags */
+.sx-row-head > .fun-e { flex: none; font: 700 10px/17px var(--sans); letter-spacing: .02em; padding: 0 7px; border-radius: 99px; white-space: nowrap; background: #fff1d6; color: #7a4a00; border: 1px solid #f5d38f; }
+.sx-row.inactive .sx-row-head > .fun-e { background: var(--panel-2); color: var(--muted); border-color: var(--line); }
+@media (prefers-color-scheme: dark) { .sx-row-head > .fun-e { background: #3a2a10; color: #ffd28a; border-color: #6b4d1c; } }
 .fun-e[data-anim="dance"] { animation: fun-in .35s cubic-bezier(.2, .9, .3, 1.5), fun-dance 1s ease-in-out .35s infinite; transform-origin: 50% 90%; }
 .fun-e[data-anim="flicker"] { animation: fun-in .35s ease-out, fun-flicker 1.4s ease-in-out .35s infinite; }
 .fun-e[data-anim="wobble"] { animation: fun-in .35s ease-out, fun-wobble 2.6s ease-in-out .6s infinite; }

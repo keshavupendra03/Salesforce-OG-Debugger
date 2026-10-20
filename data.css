@@ -101,6 +101,7 @@
 .dx-sg.k-field .dx-sg-icon { background: var(--c-method, #0284c7); }
 .dx-sg.k-rel .dx-sg-icon { background: var(--c-unit, #4f46e5); }
 .dx-sg.k-object .dx-sg-icon { background: var(--accent); }
+.dx-sg.k-child .dx-sg-icon { background: #0d9488; font-size: 12px; }
 .dx-sg.k-kw .dx-sg-icon, .dx-sg.k-op .dx-sg-icon { background: var(--soql); }
 .dx-sg.k-value .dx-sg-icon { background: var(--ok, #16a34a); }
 .dx-sg.k-date .dx-sg-icon { background: var(--write); }
@@ -111,6 +112,10 @@
 .dx-sg-label { flex: none; font-family: var(--mono); font-weight: 550; white-space: nowrap; }
 .dx-sg-label mark { background: none; color: var(--accent); font-weight: 750; }
 .dx-sg-detail { min-width: 0; margin-left: auto; padding-left: 12px; color: var(--faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dx-sg-plabel { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.dx-sg-tag { flex: none; font: 700 9px/14px var(--sans); text-transform: uppercase; letter-spacing: .05em; color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.dx-sg-ptext { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dx-sg-ptext mark { background: none; color: var(--accent); font-weight: 700; }
 .dx-sg-hint { padding: 8px 10px; color: var(--muted); font-size: 12px; }
 .dx-sg-foot { padding: 5px 8px 3px; margin-top: 3px; border-top: 1px solid var(--line); color: var(--faint); font-size: 10.5px; position: sticky; bottom: -4px; background: var(--panel); }
 
@@ -141,6 +146,14 @@
 .dx-filter-in { width: 200px; padding: 4px 8px !important; font-size: 12px !important; }
 .dx-del { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 .dx-del:hover { background: var(--bad) !important; color: #fff; }
+/* nothing selected: still visible and clickable, just quieter */
+.dx-del.idle { color: color-mix(in srgb, var(--bad) 70%, var(--muted)); border-color: color-mix(in srgb, var(--bad) 25%, var(--line-strong)); }
+.dx-del.idle:hover { background: color-mix(in srgb, var(--bad) 8%, var(--panel)) !important; color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+/* "select rows first": the checkbox column pulses briefly */
+.dx-sel-hint .dx-sel input { animation: dx-sel-pulse .6s ease-in-out 3; }
+.dx-sel-hint td.dx-sel, .dx-sel-hint th.dx-sel { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+@keyframes dx-sel-pulse { 50% { transform: scale(1.35); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .dx-sel-hint .dx-sel input { animation: none; } }
 
 .dx-tablewrap { flex: 1; min-height: 0; overflow: auto; outline: none; }
 .dx-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: max-content; min-width: 100%; font-size: 12.5px; }

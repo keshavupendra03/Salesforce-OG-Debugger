@@ -112,6 +112,21 @@ const RULES = [
   { sel: '.lm-none', where: 'start', emoji: () => '🧘' },
   { sel: '.empty-title', where: 'start', emoji: (el) => (/couldn/i.test(textOf(el)) ? '🙈' : /log/i.test(textOf(el)) ? '🕵️' : /query/i.test(textOf(el)) ? '🧙' : '👋') },
 
+  // ---- FBI Search (Full-Base Inspector): it's an investigation ----
+  { sel: '.sx-title h1', where: 'start', emoji: () => '🕵️', anim: 'wobble' },
+  { sel: '.sx-go', where: 'end', emoji: () => '🔦' },
+  { sel: '.sx-loading > b', where: 'start', emoji: () => '🚔', anim: 'roll' },
+  { sel: '.sx-summary > b', where: 'start', emoji: (el) => (/no matches/i.test(textOf(el)) ? '🕳️' : '🗂️') },
+  { sel: '.sx-empty > b', where: 'start', emoji: (el) => (/nothing found/i.test(textOf(el)) ? '🕳️' : /ready/i.test(textOf(el)) ? '🗂️' : '🕵️') },
+  { sel: '.sx-empty.small > p', where: 'start', emoji: () => 'No leads, detective. ' },
+  // each source group gets its own suspect
+  { sel: '.sx-group-head', where: 'end', emoji: (el) => ({ apex: '🧑‍💻', trigger: '🔫', flow: '🌊', process: '🦖', validation: '🚧', vf: '📜', lwc: '⚡', aura: '🌀', label: '🏷️' })[/k-(\w+)/.exec(el.querySelector('.sx-kind')?.className || '')?.[1]] || null },
+  // the best match is the prime suspect; inactive ones have an alibi
+  { sel: '.sx-groups > .sx-group:first-child > .sx-row:nth-child(2):not(.inactive) .sx-row-head', where: 'end', emoji: () => '🎯 Prime suspect', anim: 'pop' },
+  { sel: '.sx-row.inactive .sx-row-head', where: 'end', emoji: () => '😴 off duty' },
+  { sel: '.sx-note:not(.err) > span:nth-child(2)', where: 'end', emoji: () => ' 🔍 Enhance!' },
+  { sel: '.sx-note.err', where: 'start', emoji: () => '🚨' },
+
   // ---- data export ----
   { sel: '.dx-status > b', where: 'end', emoji: (el) => (/^0 rows/.test(textOf(el)) ? '🦗' : /running|fetching/i.test(textOf(el)) ? '🏃' : null) },
   { sel: '.dx-count-n', where: 'end', emoji: (el) => (textOf(el) === '0' ? '🦗' : '🧮') },
@@ -119,6 +134,39 @@ const RULES = [
   { sel: '.dx-del:not([hidden])', where: 'start', emoji: () => '🗑️' },
   { sel: '.dx-modal-card h2', where: 'start', emoji: (el) => (/delete/i.test(textOf(el)) ? '😱' : null), anim: 'wobble' },
   { sel: '.dx-run', where: 'end', emoji: () => '🚀', anim: 'hover' },
+
+  // ---- Data Import: moving in ----
+  { sel: '.di-drop-title', where: 'start', emoji: () => '📦', anim: 'float' },
+  { sel: '.di-run:not(:disabled)', where: 'end', emoji: (el) => (el.classList.contains('danger') ? '🧨' : /undelete/i.test(textOf(el)) ? '🧟' : '🚚'), anim: 'hover' },
+  { sel: '.di-st.s-ok', where: 'start', emoji: () => '✅' },
+  { sel: '.di-st.s-failed', where: 'start', emoji: () => '💥' },
+  { sel: '.di-st.s-processing', where: 'start', emoji: () => '🏃' },
+  { sel: '.di-map-st.s-unknown, .di-map-st.s-readonly', where: 'start', emoji: () => '🤷' },
+  { sel: '.di-detected', where: 'end', emoji: () => ' 🔍' },
+  { sel: '.di-prodwarn', where: 'start', emoji: () => '🫣' },
+
+  // ---- The OG Executor: lights, camera, execute ----
+  { sel: '.ox-title h1', where: 'start', emoji: () => '😎', anim: 'wobble' },
+  { sel: '.ox-exec .ox-exec-l', where: 'end', emoji: () => ' 🚀', anim: 'hover' },
+  { sel: '.ox-runner-title b', where: 'end', emoji: (el) => (/batch/i.test(textOf(el.closest('.ox-runner'))) ? ' 🍪' : /queueable/i.test(textOf(el.closest('.ox-runner'))) ? ' 🚶' : ' ⏰') },
+  { sel: '.ox-tag.k-batch', where: 'start', emoji: () => '🍪' }, // a batch, of cookies
+  { sel: '.ox-tag.k-queueable', where: 'start', emoji: () => '🚶' }, // waiting in the queue
+  { sel: '.ox-tag.k-schedulable', where: 'start', emoji: () => '⏰' },
+  { sel: '.ox-ok-title', where: 'start', emoji: (el) => (/job|schedule/i.test(textOf(el)) ? '🚀' : '🎯'), anim: 'pop' },
+  { sel: '.ox-banner.compile .ox-banner-t', where: 'start', emoji: () => '🧐', anim: 'wobble' },
+  { sel: '.ox-exc-title', where: 'start', emoji: (el) => errorOf(textOf(el.parentElement))[0], anim: 'flicker' },
+  { sel: '.ox-banner.bad .ox-errmsg', where: 'quip', quip: (el) => errorOf(textOf(el)) },
+  { sel: '.ox-st.ok', where: 'start', emoji: () => '🕺', anim: 'dance' },
+  { sel: '.ox-st.bad', where: 'start', emoji: () => '💥' },
+  { sel: '.ox-st.warn', where: 'start', emoji: () => '😬' },
+  { sel: '.ox-st.wait', where: 'start', emoji: () => '⏳' },
+  { sel: '.ox-st.off', where: 'start', emoji: () => '🛑' },
+  { sel: '.ox-job-err', where: 'quip', quip: (el) => errorOf(textOf(el)) },
+  { sel: '.ox-debug-lv', where: 'start', emoji: (el) => (/error/i.test(textOf(el)) ? '🚨' : /warn/i.test(textOf(el)) ? '⚠️' : '🐛') },
+  { sel: '.ox-empty-title', where: 'start', emoji: () => '🎬' },
+  { sel: '.ox-none > b', where: 'start', emoji: () => pick(['🦗', '🌵', '🍃']) },
+  { sel: '.ox-trace-on', where: 'end', emoji: () => ' 🕵️' },
+  { sel: '.ox-wait > b', where: 'start', emoji: () => '🏃', anim: 'roll' },
 ];
 
 function tileEmoji(el) {

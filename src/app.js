@@ -10,6 +10,7 @@ import { resizable, codeDetails, collapsibleSide } from './layout.js';
 import { setupCoffee } from './coffee.js';
 import { setupFeedback } from './feedback.js';
 import { setupFun } from './fun.js';
+import { ApexVersions } from './logs/apex-versions.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -27,6 +28,11 @@ const state = {
   appView: 'flow', // 'flow' | 'logs' | 'data'
   logsView: null,
   dataView: null,
+  searchView: null,
+  apiView: null,
+  execView: null,
+  importView: null,
+  demoData: null, // one pretend org for Data Export and Data Import
   pick: 'field', // 'field' | 'method' (left panel tab)
   cls: null, // type key
   methodId: null,
@@ -83,7 +89,7 @@ async function init() {
   renderClasses();
   renderMethods();
   const params = new URLSearchParams(location.search);
-  const startView = ['logs', 'data'].includes(params.get('view')) ? params.get('view') : null;
+  const startView = ['logs', 'data', 'import', 'search', 'api', 'exec'].includes(params.get('view')) ? params.get('view') : null;
   if (params.has('demo')) {
     if (startView) { state.mode = 'demo'; enableViews(); switchView(startView); }
     return startDemo();
@@ -143,22 +149,94 @@ async function switchView(view) {
   $('#view-flow').hidden = view !== 'flow';
   $('#view-logs').hidden = view !== 'logs';
   $('#view-data').hidden = view !== 'data';
+  $('#view-search').hidden = view !== 'search';
+  $('#view-api').hidden = view !== 'api';
+  $('#view-exec').hidden = view !== 'exec';
+  $('#view-import').hidden = view !== 'import';
   $('#rescan').hidden = view !== 'flow' || state.mode !== 'org';
   if (view === 'logs') state.logsView ||= loadLogsView();
   if (view === 'data') state.dataView ||= loadDataView();
+  if (view === 'search') state.searchView ||= loadSearchView();
+  if (view === 'api') state.apiView ||= loadApiView();
+  if (view === 'exec') state.execView ||= loadExecView();
+  if (view === 'import') state.importView ||= loadImportView();
   if (state.logsView) (await state.logsView).setActive(state.appView === 'logs');
   if (state.dataView) (await state.dataView).setActive(state.appView === 'data');
+  if (state.searchView) (await state.searchView).setActive(state.appView === 'search');
+  if (state.apiView) (await state.apiView).setActive(state.appView === 'api');
+  if (state.execView) (await state.execView).setActive(state.appView === 'exec');
+  if (state.importView) (await state.importView).setActive(state.appView === 'import');
+}
+
+async function demoData() {
+  state.demoData ||= new (await import('./data/demo-data-backend.js')).DemoDataBackend();
+  return state.demoData;
+}
+
+async function loadImportView() {
+  const { mountImport } = await import('./import/import-ui.js');
+  const backend = state.mode === 'demo'
+    ? new (await import('./import/demo-import.js')).DemoImportBackend(await demoData())
+    : new (await import('./import/import-backend.js')).SfImportBackend(state.api, state.session);
+  return mountImport($('#view-import'), backend);
+}
+
+async function loadExecView() {
+  const { mountExecutor } = await import('./exec/exec-ui.js');
+  const demo = state.mode === 'demo';
+  const backend = demo
+    ? new (await import('./exec/demo-exec.js')).DemoExecBackend()
+    : new (await import('./exec/exec-backend.js')).SfExecBackend(state.api, state.session, new (await import('./logs/log-backend.js')).SfLogBackend(state.api));
+  return mountExecutor($('#view-exec'), {
+    backend,
+    // the classes come from the Code Flow scan (cached, only changes fetched)
+    getIndex: () => state.indexPromise,
+    listObjects: async () => (demo ? DEMO_OBJECTS : state.objects.length ? state.objects : state.api.listObjects()),
+    listFields: async (name) => (demo ? DEMO_FIELDS[name] || [] : state.api.listFields(name)),
+    setupUrl: (path) => (state.mode === 'org' ? `https://${state.session.apiHost.replace(/\.my\.salesforce\.com$/i, '.lightning.force.com')}${path}` : null),
+    // a log from the Executor opens in Debug Logs: an org log by id, or the text of an anonymous run
+    openLog: async (log) => {
+      await switchView('logs');
+      const lv = await state.logsView;
+      if (log.id) lv.showLog(log.id);
+      else lv.showText(log.meta, log.body);
+    },
+  });
+}
+
+async function loadApiView() {
+  const { mountInformant } = await import('./informant/informant-ui.js');
+  return mountInformant($('#view-api'), {
+    demo: state.mode === 'demo',
+    // "Salesforce session" auth and {{$sfInstanceUrl}} use the org this tab is connected to
+    getSalesforce: () => (state.session && state.api ? { sessionId: state.session.sessionId, apiHost: state.session.apiHost, version: state.api.version } : null),
+  });
 }
 
 function enableViews() {
   $('#nav-logs').disabled = false;
   $('#nav-data').disabled = false;
+  $('#nav-search').disabled = false;
+  $('#nav-api').disabled = false;
+  $('#nav-exec').disabled = false;
+  $('#nav-import').disabled = false;
+}
+
+async function loadSearchView() {
+  const { mountSearch } = await import('./search/search-ui.js');
+  const sources = state.mode === 'demo'
+    ? new (await import('./search/demo-search.js')).DemoSearchSources()
+    : new (await import('./search/search-sources.js')).SfSearchSources(state.api, state.session, {
+      // Apex comes from the Code Flow scan (already running, cached on disk), so it's never downloaded twice
+      getApexUnits: async () => (await state.indexPromise).files.map((f) => f.unit),
+    });
+  return mountSearch($('#view-search'), sources);
 }
 
 async function loadDataView() {
   const { mountData } = await import('./data/data-ui.js');
   const backend = state.mode === 'demo'
-    ? new (await import('./data/demo-data-backend.js')).DemoDataBackend()
+    ? await demoData()
     : new (await import('./data/data-backend.js')).SfDataBackend(state.api, state.session);
   return mountData($('#view-data'), backend);
 }
@@ -170,6 +248,7 @@ async function loadLogsView() {
     : new (await import('./logs/log-backend.js')).SfLogBackend(state.api);
   return mountLogs($('#view-logs'), backend, {
     getSource: getApexSource,
+    rescan: rescanApex,
     setupUrl,
     // the Code Flow scan of the org's Apex, used by Field Trace
     getIndex: () => state.indexPromise,
@@ -181,14 +260,50 @@ async function loadLogsView() {
 // ---------- Apex source for the log viewer ----------
 
 const sourceCache = new Map();
+const apexVersions = new ApexVersions();
 
 // src: { kind: 'class' | 'trigger', id?, name } as found in a debug log.
-function getApexSource(src) {
+// at: when the log ran (ms). A class changed since then comes back in the version that log ran, when known.
+async function getApexSource(src, { at } = {}) {
   const key = `${src.kind}:${src.id?.slice(0, 15) || src.name.toLowerCase()}`;
   if (!sourceCache.has(key)) {
     sourceCache.set(key, loadApexSource(src).catch((e) => { sourceCache.delete(key); throw e; }));
   }
-  return sourceCache.get(key);
+  const unit = await sourceCache.get(key);
+  apexVersions.note(unit);
+  return apexVersions.pick(key, unit, at);
+}
+
+// Debug Logs → Rescan Apex: fetch what changed (the scan cache only re-downloads classes whose
+// LastModifiedDate moved), keep the old bodies for older logs, and say what changed.
+async function rescanApex() {
+  if (state.mode === 'demo') {
+    await new Promise((r) => setTimeout(r, 500));
+    return { changed: [], added: [], removed: [] };
+  }
+  try { await state.indexPromise; } catch { /* a failed scan is retried below */ }
+  const before = new Map((state.index?.files || []).map(({ unit }) => [unit.id, unit]));
+  for (const { unit } of state.index?.files || []) apexVersions.note(unit);
+  // classes opened one by one (before the scan finished) count as "before" too
+  for (const p of sourceCache.values()) {
+    const u = await p.catch(() => null);
+    if (u?.id && !before.has(u.id)) before.set(u.id, u);
+    apexVersions.note(u);
+  }
+  state.indexPromise = scanOrg();
+  const index = await state.indexPromise;
+  sourceCache.clear();
+  const now = new Set();
+  const changed = [];
+  const added = [];
+  for (const { unit } of index.files) {
+    now.add(unit.id);
+    const old = before.get(unit.id);
+    if (!old) { if (before.size) added.push(unit.name); } else if (old.lastModified !== unit.lastModified || old.body !== unit.body) changed.push(unit.name);
+    apexVersions.note(unit);
+  }
+  const removed = [...before.values()].filter((u) => !now.has(u.id) && index.files.length).map((u) => u.name);
+  return { changed, added, removed };
 }
 
 async function loadApexSource({ kind, id, name }) {
@@ -203,9 +318,9 @@ async function loadApexSource({ kind, id, name }) {
   else if (name && /^\w+$/.test(name)) where = `Name = '${name}' AND NamespacePrefix = null`;
   else return null;
   const sobject = kind === 'trigger' ? 'ApexTrigger' : 'ApexClass';
-  const [r] = await state.api.query(`SELECT Id, Name, Body, NamespacePrefix FROM ${sobject} WHERE ${where}`, { tooling: true });
+  const [r] = await state.api.query(`SELECT Id, Name, Body, NamespacePrefix, LastModifiedDate FROM ${sobject} WHERE ${where}`, { tooling: true });
   if (!r) return null;
-  return { id: r.Id, name: r.Name, kind, body: r.Body || '', managed: !!r.NamespacePrefix || r.Body === '(hidden)' };
+  return { id: r.Id, name: r.Name, kind, body: r.Body || '', lastModified: r.LastModifiedDate, managed: !!r.NamespacePrefix || r.Body === '(hidden)' };
 }
 
 async function startDemo() {

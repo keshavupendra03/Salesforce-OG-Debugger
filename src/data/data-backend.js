@@ -24,7 +24,7 @@ export class SfDataBackend {
       name: r.name,
       fields: r.fields.map((f) => ({
         name: f.name, label: f.label, type: f.type, relationshipName: f.relationshipName || null, referenceTo: f.referenceTo || [],
-        picklist: (f.picklistValues || []).filter((p) => p.active).map((p) => p.value),
+        picklist: (f.picklistValues || []).filter((p) => p.active).map((p) => ({ value: p.value, label: p.label ?? p.value })),
       })).sort((a, b) => a.name.localeCompare(b.name)),
       children: (r.childRelationships || []).filter((c) => c.relationshipName).map((c) => ({ name: c.relationshipName, object: c.childSObject })),
     };

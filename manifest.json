@@ -3,14 +3,15 @@
   "name": "Salesforce OG Debugger",
   "short_name": "OG Debugger",
   "version": "1.0.0",
-  "description": "Trace where Apex reads or writes a field, and debug Salesforce logs with execution paths, merged sessions and limits.",
+  "description": "Trace where Apex reads or writes a field, debug Salesforce logs with execution paths, query data, and see every field of a record.",
   "action": {
     "default_title": "Open Salesforce OG Debugger for this org",
     "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png" }
   },
   "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "background": { "service_worker": "background.js" },
-  "permissions": ["cookies"],
+  "permissions": ["cookies", "browsingData"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
   "host_permissions": [
     "https://*.salesforce.com/*",
     "https://*.force.com/*",
@@ -20,5 +21,31 @@
     "https://*.salesforce.mil/*",
     "https://*.cloudforce.mil/*",
     "https://*.sfcrmproducts.cn/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.lightning.force.com/*",
+        "https://*.my.salesforce.com/*",
+        "https://*.my.salesforce-setup.com/*",
+        "https://*.lightning.force.mil/*",
+        "https://*.my.salesforce.mil/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.html"],
+      "matches": [
+        "https://*.lightning.force.com/*",
+        "https://*.my.salesforce.com/*",
+        "https://*.my.salesforce-setup.com/*",
+        "https://*.lightning.force.mil/*",
+        "https://*.my.salesforce.mil/*"
+      ]
+    }
   ]
 }

@@ -140,7 +140,7 @@ function scopeAt(toks, pos) {
 
 /**
  * What to suggest at `pos`.
- * meta: { objects: [{name,label}], describe(name) -> {fields:[{name,label,type,relationshipName,referenceTo,picklist}], children:[{name, object}]} | null }
+ * meta: { objects: [{name,label}], describe(name) -> {fields:[{name,label,type,relationshipName,referenceTo,picklist:[{value,label}]}], children:[{name, object}]} | null }
  * Returns { from, to, items: [{ label, insert, kind, detail, caret? }], need: [objectNames to describe], hint }.
  */
 export function suggest(text, pos, meta) {
@@ -235,9 +235,16 @@ export function suggest(text, pos, meta) {
         { label: 'FIELDS(ALL)', insert: 'FIELDS(ALL)', kind: 'fn', detail: 'all fields · needs LIMIT 200' },
         { label: 'FIELDS(STANDARD)', insert: 'FIELDS(STANDARD)', kind: 'fn', detail: 'standard fields' },
         { label: 'FIELDS(CUSTOM)', insert: 'FIELDS(CUSTOM)', kind: 'fn', detail: 'custom fields · needs LIMIT 200' },
-        { label: '(SELECT … FROM child)', insert: '(SELECT Id FROM )', caret: -1, kind: 'snippet', detail: 'sub-query' },
       );
+      if (!scope.sub) items.push({ label: '(SELECT … FROM child)', insert: '(SELECT Id FROM )', caret: -1, kind: 'snippet', detail: 'sub-query' });
       for (const fn of ['COUNT', 'COUNT_DISTINCT', 'SUM', 'AVG', 'MIN', 'MAX']) items.push({ label: `${fn}()`, insert: `${fn}()`, caret: -1, kind: 'fn', detail: 'aggregate' });
+      // child relationships: picking one writes the whole sub-query and leaves the caret on its field list
+      if (!scope.sub) {
+        for (const c of d.children || []) {
+          const tail = `Id FROM ${c.name})`;
+          items.push({ label: c.name, insert: `(SELECT ${tail}`, caret: -tail.length, kind: 'child', detail: `child records · ${c.object}`, again: true });
+        }
+      }
     }
     return items;
   };
@@ -359,7 +366,15 @@ function valueItems(f, op, inQuote) {
   const items = [];
   const type = f?.type;
   if (f?.picklist?.length) {
-    for (const v of f.picklist) items.push({ label: v, insert: inQuote ? v : `'${v.replace(/'/g, "\\'")}'`, kind: 'value', detail: 'picklist value' });
+    // the API name is what SOQL needs; the label is what people recognise from the UI
+    for (const p of f.picklist) {
+      const v = typeof p === 'string' ? p : p.value;
+      const lbl = typeof p === 'string' ? null : p.label;
+      items.push({
+        label: v, insert: inQuote ? v : `'${v.replace(/'/g, "\\'")}'`, kind: 'value',
+        detail: lbl && lbl !== v ? lbl : 'picklist value', valueLabel: lbl && lbl !== v ? lbl : null,
+      });
+    }
   }
   if (inQuote) return items;
   if (op === 'IN' || op === 'NOT' || op === 'INCLUDES' || op === 'EXCLUDES') items.unshift({ label: "( '…' )", insert: "('')", caret: -2, kind: 'snippet', detail: 'list' });
@@ -431,13 +446,13 @@ function rank(items, partial) {
     else if (l.includes(p)) s = 3;
     else if (d.includes(p)) s = 4;
     else continue;
-    if (it.kind === 'rel') s += 0.5;
+    if (it.kind === 'rel' || it.kind === 'child') s += 0.5;
     scored.push([s, it]);
   }
   scored.sort((a, b) => a[0] - b[0] || (KIND_ORDER[a[1].kind] ?? 5) - (KIND_ORDER[b[1].kind] ?? 5));
   return scored.slice(0, 80).map(([, it]) => it);
 }
-const KIND_ORDER = { snippet: 0, object: 1, field: 1, value: 1, op: 1, rel: 2, kw: 3, date: 2, fn: 4 };
+const KIND_ORDER = { snippet: 0, object: 1, field: 1, value: 1, op: 1, rel: 2, child: 2, kw: 3, date: 2, fn: 4 };
 
 // ---------- record ids ----------
 

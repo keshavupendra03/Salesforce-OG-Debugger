@@ -200,8 +200,8 @@ function markLines(frame) {
 
 function refText({ kind, node }) {
   if (kind === 'call') return displayName(node);
-  if (kind === 'error') return clip(firstLine(node.label), 120);
-  return clip(firstLine(node.label), 90);
+  // the whole line (all of a multi-line debug), capped only so a huge serialized blob can't freeze the pane
+  return clip(String(node.label || '').trim(), 5000);
 }
 
 // ---------- small shared widgets ----------
@@ -1082,6 +1082,7 @@ export function mountLogs(root, backend, sources = {}) {
           S.parsed.delete(old);
           S.bodies.delete(old);
         }
+        updateMem();
       } catch (e) {
         if (S.selectedId !== key) return;
         el.main.replaceChildren(h('div', { class: 'lg-welcome' },
@@ -1098,6 +1099,157 @@ export function mountLogs(root, backend, sources = {}) {
     renderViewer();
   }
 
+  // ---------- memory: what the opened logs and sessions hold, and a way to let it go ----------
+  // Rough size in the browser: the raw text (strings are 2 bytes a char), the split lines again,
+  // plus per-line bookkeeping (category byte, tree nodes, queries, DML…).
+  const MEM_HEAVY = 60 * 1024 * 1024;
+  const sizeOfParsed = (p) => {
+    if (p.memBytes == null) {
+      let chars = 0;
+      for (const l of p.lines) chars += l.length;
+      p.memBytes = chars * 2 + p.lines.length * 90;
+    }
+    return p.memBytes;
+  };
+  function memStats() {
+    let bytes = 0;
+    for (const b of S.bodies.values()) bytes += (b?.length || 0) * 2;
+    let logs = 0;
+    let sessions = 0;
+    for (const p of S.parsed.values()) {
+      bytes += sizeOfParsed(p);
+      if (p.merged) sessions++; else logs++;
+    }
+    return { bytes, logs, sessions };
+  }
+  const memText = (b) => (b >= 1024 * 1024 ? `${Math.round(b / 1024 / 1024)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+
+  // the button lives in the open log's header, next to Download / Copy
+  function memButton() {
+    el.memBtn = h('button', {
+      class: 'ghost small lg-mem', hidden: true, 'aria-describedby': 'lg-mem-tip',
+      onclick: freeMemory, onpointerenter: showMemTip, onpointerleave: hideMemTip, onfocus: showMemTip, onblur: hideMemTip,
+    }, h('span', { class: 'lg-mem-icon', 'aria-hidden': 'true' }, '🧹'), h('span', { class: 'lg-mem-label' }, 'Free memory'));
+    return el.memBtn;
+  }
+
+  function updateMem() {
+    if (!el.memBtn?.isConnected) return;
+    const m = memStats();
+    const any = m.logs + m.sessions > 0;
+    el.memBtn.hidden = !any;
+    if (!any) { el.memBtn.classList.remove('heavy'); S.memHeavy = false; return; }
+    // an estimate from the loaded text, hence the "~"
+    el.memBtn.querySelector('.lg-mem-label').textContent = `Free memory · ~${memText(m.bytes)}`;
+    el.memBtn.setAttribute('aria-label', `Free memory: unload ${m.logs + m.sessions} opened log${m.logs + m.sessions === 1 ? '' : 's'}, roughly ${memText(m.bytes)}`);
+    // heavy: lots of text in memory, or a big merged session
+    const bigSession = [...S.parsed.values()].some((p) => p.merged && p.txs?.length >= 6);
+    const heavy = m.bytes >= MEM_HEAVY || bigSession;
+    el.memBtn.classList.toggle('heavy', heavy);
+    if (heavy && !S.memHeavy) {
+      // one soft sheen when it first gets heavy, never a loop
+      el.memBtn.classList.remove('shine');
+      void el.memBtn.offsetWidth;
+      el.memBtn.classList.add('shine');
+      setTimeout(() => el.memBtn?.classList.remove('shine'), 1600);
+    }
+    S.memHeavy = heavy;
+    if (S.memTip) showMemTip();
+  }
+
+  function showMemTip() {
+    const m = memStats();
+    const n = m.logs + m.sessions;
+    const what = [m.logs ? `${m.logs} log${m.logs === 1 ? '' : 's'}` : null, m.sessions ? `${m.sessions} session${m.sessions === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ');
+    S.memTip ||= document.body.appendChild(h('div', { class: 'lg-mem-tip', id: 'lg-mem-tip', role: 'tooltip' }));
+    // Chrome/Edge report the page's real JavaScript memory; other browsers don't
+    const heap = performance.memory?.usedJSHeapSize;
+    S.memTip.replaceChildren(
+      h('b', {}, S.memHeavy ? 'Things are getting heavy' : 'Free up memory'),
+      h('span', {}, `${what} you opened ${n === 1 ? 'is' : 'are'} kept in memory, so switching back is instant. `,
+        'Big sessions can slow down the whole tool, including Code Flow and Data Export.'),
+      h('dl', { class: 'lg-mem-nums' },
+        h('dt', {}, 'Opened logs'), h('dd', {}, `~${memText(m.bytes)}`, h('small', {}, ' estimated from their text')),
+        heap ? [h('dt', {}, 'Whole page now'), h('dd', {}, memText(heap), h('small', {}, ' measured by the browser'))] : null),
+      h('span', { class: 'lg-mem-tip-s' }, 'Click to unload them. The list stays; opening a log again just downloads it again.'));
+    const r = el.memBtn.getBoundingClientRect();
+    const w = 290;
+    S.memTip.style.width = `${w}px`;
+    S.memTip.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
+    S.memTip.style.top = `${r.bottom + 8}px`;
+  }
+  function hideMemTip() {
+    S.memTip?.remove();
+    S.memTip = null;
+  }
+
+  function freeMemory() {
+    const m = memStats();
+    if (!m.logs && !m.sessions) return;
+    hideMemTip();
+    if (document.querySelector('.fx')) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); // close the full-screen view
+    S.parsed.clear();
+    S.bodies.clear();
+    S.selectedId = null;
+    S.openMeta = null;
+    S.ftResult = null;
+    S.ftIndex = null;
+    S.xp = { mode: null, selKey: null, focus: 0 };
+    renderEmptyMain(); // drops the viewer's DOM too
+    renderLogs();
+    side.refresh();
+    updateMem();
+    const what = [m.logs ? `${m.logs} log${m.logs === 1 ? '' : 's'}` : null, m.sessions ? `${m.sessions} session${m.sessions === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ');
+    toast(`Unloaded ${what} · roughly ${memText(m.bytes)} freed`, 'ok');
+  }
+
+  // ---------- Rescan Apex: the class was fixed in the Developer Console, bring the new code in ----------
+  async function rescanApex(btn) {
+    const label = btn?.querySelector('.lg-rescan-label');
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); label.textContent = 'Rescanning…'; }
+    try {
+      const r = await sources.rescan();
+      // Field Trace results came from the old code scan
+      for (const p of S.parsed.values()) p.ftCache?.clear();
+      S.ftIndex = null;
+      // re-open what's on screen with the fresh code (the full-screen view too, if it was open)
+      const fx = !!document.querySelector('.fx');
+      if (fx) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      if (S.tab === 'field') showTab('field');
+      else if (S.lastOpen && el.xpCode?.isConnected) {
+        await openFrame(S.lastOpen);
+        if (fx) el.xpCode.focusOpen?.();
+      }
+      const names = (list) => (list.length > 3 ? `${list.slice(0, 3).join(', ')} +${list.length - 3}` : list.join(', '));
+      const parts = [
+        r.changed.length ? `${r.changed.length} changed (${names(r.changed)})` : null,
+        r.added.length ? `${r.added.length} new (${names(r.added)})` : null,
+        r.removed.length ? `${r.removed.length} deleted` : null,
+      ].filter(Boolean);
+      toast(parts.length ? `Apex refreshed: ${parts.join(' · ')}` : 'Apex is up to date: nothing changed since the last scan', 'ok');
+    } catch (e) {
+      toast(`Couldn’t rescan the Apex: ${e.message}`, 'error');
+    } finally {
+      if (btn?.isConnected) { btn.disabled = false; btn.classList.remove('busy'); label.textContent = 'Rescan Apex'; }
+    }
+  }
+
+  // Which code is on screen when the class changed after this log ran
+  function versionNote(unit, onLatest) {
+    const v = unit.version;
+    if (!v) return null;
+    const when = fmtFull(parseSfDate(v.changedAt));
+    if (v.kind === 'older') {
+      return h('div', { class: 'code-ver older', role: 'note' },
+        h('span', { 'aria-hidden': 'true' }, '🕰'),
+        h('span', {}, h('b', {}, 'The code this log ran. '), `${unit.name} was changed after it (${when}).`),
+        onLatest ? h('button', { class: 'link', onclick: onLatest }, 'Show latest') : null);
+    }
+    return h('div', { class: 'code-ver newer', role: 'note' },
+      h('span', { 'aria-hidden': 'true' }, '⚠'),
+      h('span', {}, h('b', {}, `${unit.name} changed after this log ran `), `(${when}). Line numbers may not match. Run it again for a new log.`));
+  }
+
   async function deleteLogs(ids) {
     if (!ids.length) return;
     try {
@@ -1105,6 +1257,7 @@ export function mountLogs(root, backend, sources = {}) {
       const gone = new Set(ids);
       S.logs = S.logs.filter((l) => !gone.has(l.Id));
       for (const id of ids) { S.bodies.delete(id); S.parsed.delete(id); }
+      updateMem();
       if (gone.has(S.selectedId)) { S.selectedId = null; renderEmptyMain(); }
       renderLogs();
       toast(`Deleted ${ids.length} log${ids.length === 1 ? '' : 's'}`, 'ok');
@@ -1148,7 +1301,7 @@ export function mountLogs(root, backend, sources = {}) {
       li.setAttribute('aria-selected', String(li.dataset.id === id));
       if (li.dataset.id === id) { li.classList.remove('fresh'); li.scrollIntoView({ block: 'nearest' }); }
     }
-    const meta = S.logs.find((l) => l.Id === id);
+    const meta = S.logs.find((l) => l.Id === id) || S.extraLogs?.get(id);
     if (!S.parsed.has(id)) {
       const ld = loadingView([{
         label: meta?.Operation || 'Log', sub: meta ? `${fmtClock(parseSfDate(meta.StartTime))} · ${meta.LogUser?.Name || ''}` : '', total: meta?.LogLength || 0,
@@ -1171,6 +1324,7 @@ export function mountLogs(root, backend, sources = {}) {
           S.parsed.delete(old);
           S.bodies.delete(old);
         }
+        updateMem();
       } catch (e) {
         if (S.selectedId !== id) return;
         el.main.replaceChildren(h('div', { class: 'lg-welcome' },
@@ -1237,9 +1391,14 @@ export function mountLogs(root, backend, sources = {}) {
           p.merged ? h('span', { class: 'lv-merged', title: 'Several logs shown as one execution' }, `${p.txs.length} logs merged`) : null,
           h('span', { class: 'lv-inline-meta', title: `Started ${fmtFull(parseSfDate(log.StartTime))}` }, inline),
           h('div', { class: 'lv-actions' },
+            memButton(),
+            sources.rescan ? h('button', {
+              class: 'ghost small lg-rescan', onclick: (e) => rescanApex(e.currentTarget),
+              title: 'Fixed a class in the Developer Console? Fetch the latest Apex from the org (only what changed).\nLogs written before your change keep showing the code they ran.',
+            }, h('span', { class: 'lg-rescan-i', 'aria-hidden': 'true' }, '↻'), h('span', { class: 'lg-rescan-label' }, 'Rescan Apex')) : null,
             h('button', { class: 'ghost small', onclick: () => download(log, S.bodies.get(log.Id)) }, '⤓ Download'),
             h('button', { class: 'ghost small', onclick: () => copyText(S.bodies.get(log.Id)) }, 'Copy'),
-            p.merged ? null : h('button', { class: 'ghost small danger-text', onclick: (e) => armConfirm(e.currentTarget, 'Confirm delete', () => deleteLogs([log.Id])) }, 'Delete'),
+            p.merged || log.local ? null : h('button', { class: 'ghost small danger-text', onclick: (e) => armConfirm(e.currentTarget, 'Confirm delete', () => deleteLogs([log.Id])) }, 'Delete'),
             headToggle)),
         h('div', { class: 'lv-meta' },
           metaItem(p.merged ? 'Users' : 'User', log.LogUser?.Name),
@@ -1252,6 +1411,7 @@ export function mountLogs(root, backend, sources = {}) {
       el.vTabs, el.vBody);
     showTab(S.tab);
     side.refresh();
+    updateMem();
   }
 
   function showTab(k) {
@@ -1654,13 +1814,16 @@ export function mountLogs(root, backend, sources = {}) {
     const pane = el.xpCode;
     const seq = ++srcSeq;
     const p = S.parsed.get(S.selectedId);
+    S.lastOpen = o; // what Rescan Apex re-opens
     pane.replaceChildren(h('div', { class: 'lg-loading' }, h('span', { class: 'lg-spinner' }), `Loading ${frame.src.qual || frame.src.name}…`));
     let unit;
     try {
       const anon = frame.src.lines || p.anon;
+      // when this log ran: a class changed after that is shown in the version the log ran, when we have it
+      const at = +parseSfDate((txOf(frame)?.meta || S.openMeta)?.StartTime);
       unit = frame.src.kind === 'anon'
         ? (anon.length ? { name: 'Anonymous', kind: 'anon', body: anon.join('\n') } : null)
-        : await sources.getSource?.(frame.src);
+        : await sources.getSource?.(frame.src, { at });
     } catch (e) {
       if (seq === srcSeq) pane.replaceChildren(msgPane('Couldn’t load the Apex source', e.message, N));
       return;
@@ -1760,6 +1923,7 @@ export function mountLogs(root, backend, sources = {}) {
         m.canNarrow ? h('button', { class: 'link', onclick: () => renderSource({ ...o, whole: !o.whole }) }, o.whole ? 'Method only' : 'Whole class') : null,
         h('button', { class: 'link', onclick: () => jumpTo((focus || N).li) }, `Log line ${(focus || N).li + 1}`),
         m.url ? h('a', { href: m.url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null),
+      versionNote(unit, unit.version?.latest ? () => renderSource({ ...o, unit: unit.version.latest }) : null),
       m.errText || refs ? codeDetails([m.errText ? errBox(m.errText) : null, refs], detailsSummary(marks, m.range, !!m.errText)) : null);
     scroller.append(sourcePre(m, focusLine));
     pane.replaceChildren(head, scroller);
@@ -1921,10 +2085,10 @@ export function mountLogs(root, backend, sources = {}) {
     function drawDetails() {
       const m = sourceModel({ ...o, whole: true });
       const sum = detailsSummary(marks, m.range, !!m.errText);
-      detailsBody.replaceChildren(
+      detailsBody.replaceChildren(...[ // (filter: replaceChildren would print a null as "null")
         sum.badges.length ? h('div', { class: 'cd-badges fx-badges' }, sum.badges.map(([t, k]) => h('span', { class: `cd-badge ${k || ''}` }, t))) : null,
         m.errText ? errBox(m.errText) : null,
-        m.refs.length ? refsList(m, (ln) => revealSrc(ln)) : h('p', { class: 'lv-muted fx-none' }, 'The log doesn’t point at any line of this step.'));
+        m.refs.length ? refsList(m, (ln) => revealSrc(ln)) : h('p', { class: 'lv-muted fx-none' }, 'The log doesn’t point at any line of this step.')].filter(Boolean));
     }
     function setTab(k) {
       tab = k;
@@ -1946,7 +2110,7 @@ export function mountLogs(root, backend, sources = {}) {
       h('span', { 'aria-hidden': 'true' }, side === 'src' ? '›' : '‹'), h('span', { class: 'fx-rail-label' }, label));
     const left = h('section', { class: 'fx-pane fx-left' },
       paneHead('src', 'Apex', h('span', { class: 'fx-head-extra' }, srcSub, wholeBtn, o.unit.id && sources.setupUrl ? h('a', { href: sources.setupUrl(o.unit), target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null)),
-      srcBody, rail('src', 'Apex source'));
+      versionNote(o.unit, null), srcBody, rail('src', 'Apex source'));
     const right = h('section', { class: 'fx-pane fx-right' },
       paneHead('log', 'From the log', tabsEl), detailsBody, logPanel, rail('log', 'Log details'));
     const grid = h('div', { class: 'fx-grid' }, left, right);
@@ -2785,5 +2949,20 @@ export function mountLogs(root, backend, sources = {}) {
     S.tickTimer = on ? setInterval(() => { renderFlags(); renderLogs(); updateUntil(); }, 30000) : null;
   }
 
-  return { setActive };
+  // ---------- opened from another view (The OG Executor) ----------
+  // an org log by id: refresh the list first if it's newer than what we have
+  async function showLog(id) {
+    if (!S.logs.some((l) => l.Id === id)) await loadLogs(false);
+    openLog(id);
+  }
+  // a log that isn't stored in the org (an Anonymous Apex run's log comes back with the call): shown as-is
+  function showText(meta, body) {
+    S.extraLogs ||= new Map();
+    S.extraLogs.set(meta.Id, { ...meta, local: true });
+    S.parsed.delete(meta.Id);
+    S.bodies.set(meta.Id, body);
+    openLog(meta.Id);
+  }
+
+  return { setActive, showLog, showText };
 }
