@@ -444,6 +444,13 @@ button.chip:hover { color: var(--text); }
 .path .arrow { color: var(--faint); }
 .path .field-end { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .paths-note { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+.paths-tools { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.paths-tools .path-copy-all { margin-left: auto; }
+.path { position: relative; padding-right: 40px; }
+.path-copy { position: absolute; top: 7px; right: 7px; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--faint); font-size: 13px; }
+.path:hover .path-copy, .path-copy:focus-visible { color: var(--muted); border-color: var(--line); background: var(--panel); }
+.path-copy:hover { color: var(--accent) !important; border-color: var(--accent) !important; }
+.path-copy.copied, .path-copy-all.copied { color: var(--ok, #16a34a) !important; border-color: var(--ok, #16a34a) !important; }
 .group-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin: 14px 0 2px; }
 .group-title:first-child { margin-top: 0; }
 
@@ -464,6 +471,11 @@ button.chip:hover { color: var(--text); }
 .src .row { display: flex; padding-right: 16px; }
 .src .row.hl-ref { background: var(--hl-ref); }
 .src .row.hl-call { background: var(--hl-call); }
+/* whole class: the selected method's lines keep a marker */
+.src .row.in-method .gutter { box-shadow: inset -3px 0 0 color-mix(in srgb, var(--accent) 55%, transparent); color: var(--muted); }
+.code-copy { display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px !important; font-size: 11.5px !important; }
+.code-copy.copied { color: var(--ok, #16a34a); border-color: var(--ok, #16a34a); }
+.code-sub .link { font-size: 12px; }
 .src .gutter { flex: none; width: 52px; padding-right: 12px; text-align: right; color: var(--faint); user-select: none; }
 .src .txt { white-space: pre; }
 .tk-kw { color: #a626a4; }

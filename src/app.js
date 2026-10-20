@@ -39,6 +39,8 @@ const state = {
   view: 'tree',
   opts: { possible: false, tests: false },
   selectedKey: null,
+  codeWhole: false, // code panel: the whole class instead of just the method
+  codeShown: null,
 };
 
 // ---------- small helpers ----------
@@ -820,40 +822,141 @@ function expandAll(limit) {
 // rootInfo: Map<methodId, { refs }> in field mode, null when the target is a method.
 function renderPaths(paths, rootInfo, truncated) {
   const wrap = h('div', { class: 'paths' });
-  const groups = [
-    ['entry', 'From an entry point'],
-    ['orphan', 'No Apex caller found (Flow, Visualforce, anonymous Apex or managed code?)'],
-    ['depth', 'Stopped at max depth'],
-  ];
-  for (const [end, title] of groups) {
-    const list = paths.filter((p) => p.end === end);
-    if (!list.length) continue;
-    wrap.append(h('div', { class: 'group-title' }, `${title} · ${list.length}`));
-    const M = (p) => state.index.methodsById.get(p.ids[0]);
-    list.sort((a, b) => entryRank(M(a)) - entryRank(M(b)) || M(a).label.localeCompare(M(b).label) || a.ids.length - b.ids.length);
-    for (const p of list) {
-      const row = h('div', { class: 'path' });
-      const first = state.index.methodsById.get(p.ids[0]);
-      row.append(end === 'entry' ? entryBadge(first.entry) : h('span', { class: 'entry orphan' }, end === 'orphan' ? 'unknown entry' : '…'));
-      p.ids.forEach((id, i) => {
-        const m = state.index.methodsById.get(id);
-        const last = i === p.ids.length - 1;
-        let info, key;
-        if (!last) { info = { via: viaFor(id, p.ids[i + 1]), childId: p.ids[i + 1] }; key = `path:${id}>${p.ids[i + 1]}`; }
-        else if (rootInfo) { info = { refs: rootInfo.get(id).refs }; key = `ref:${id}`; }
-        else { info = { self: true }; key = `self:${id}`; }
-        row.append(h('button', { class: 'step-chip', 'data-key': key, onclick: () => selectNode(key, id, info) }, m.label));
-        if (!last || rootInfo) row.append(h('span', { class: 'arrow' }, '→'));
-      });
-      if (rootInfo) {
-        const r = rootInfo.get(p.ids[p.ids.length - 1]);
-        row.append(...accessBadges(r.refs), h('span', { class: 'field-end' }, state.field.name));
-      }
-      wrap.append(row);
+  const ordered = orderPaths(paths);
+  wrap.append(h('div', { class: 'paths-tools' },
+    h('span', {}, `${ordered.length} path${ordered.length === 1 ? '' : 's'}${truncated ? ' (the first 400)' : ''}`),
+    h('button', {
+      class: 'ghost small path-copy-all', title: 'Copy every path as plain text, ready to paste into Teams, an email or ChatGPT',
+      onclick: (e) => copyPaths(e.currentTarget, allPathsText(ordered, rootInfo, truncated), 'Copied all paths'),
+    }, h('span', { 'aria-hidden': 'true' }, '⧉'), ' Copy all paths')));
+  let group = null;
+  ordered.forEach((p, n) => {
+    if (p.end !== group) {
+      group = p.end;
+      wrap.append(h('div', { class: 'group-title' }, `${PATH_GROUPS[group]} · ${ordered.filter((x) => x.end === group).length}`));
     }
-  }
+    const row = h('div', { class: 'path' });
+    const first = state.index.methodsById.get(p.ids[0]);
+    row.append(p.end === 'entry' ? entryBadge(first.entry) : h('span', { class: 'entry orphan' }, p.end === 'orphan' ? 'unknown entry' : '…'));
+    p.ids.forEach((id, i) => {
+      const m = state.index.methodsById.get(id);
+      const last = i === p.ids.length - 1;
+      let info, key;
+      if (!last) { info = { via: viaFor(id, p.ids[i + 1]), childId: p.ids[i + 1] }; key = `path:${id}>${p.ids[i + 1]}`; }
+      else if (rootInfo) { info = { refs: rootInfo.get(id).refs }; key = `ref:${id}`; }
+      else { info = { self: true }; key = `self:${id}`; }
+      row.append(h('button', { class: 'step-chip', 'data-key': key, onclick: () => selectNode(key, id, info) }, m.label));
+      if (!last || rootInfo) row.append(h('span', { class: 'arrow' }, '→'));
+    });
+    if (rootInfo) {
+      const r = rootInfo.get(p.ids[p.ids.length - 1]);
+      row.append(...accessBadges(r.refs), h('span', { class: 'field-end' }, state.field.name));
+    }
+    row.append(h('button', {
+      class: 'path-copy', title: 'Copy this path as plain text', 'aria-label': `Copy path ${n + 1}`,
+      onclick: (e) => copyPaths(e.currentTarget, [pathsHeading(1), '', ...pathText(p, n, ordered.length, rootInfo), '', COPY_FOOTER].join('\n'), 'Copied'),
+    }, '⧉'));
+    wrap.append(row);
+  });
   if (truncated) wrap.append(h('p', { class: 'paths-note' }, 'Showing the first 400 paths. Use the call tree to explore the rest.'));
   return wrap;
+}
+
+// ---------- entry paths as text (to share in Teams, an email, ChatGPT…) ----------
+
+const PATH_GROUPS = {
+  entry: 'From an entry point',
+  orphan: 'No Apex caller found (Flow, Visualforce, anonymous Apex or managed code?)',
+  depth: 'Stopped at max depth',
+};
+const COPY_FOOTER = '(Copied from Salesforce OG Debugger · Code Flow)';
+
+// the order they're shown in: entry paths first, by entry kind, then name, then length
+function orderPaths(paths) {
+  const M = (p) => state.index.methodsById.get(p.ids[0]);
+  return Object.keys(PATH_GROUPS).flatMap((end) => paths.filter((p) => p.end === end)
+    .sort((a, b) => entryRank(M(a)) - entryRank(M(b)) || M(a).label.localeCompare(M(b).label) || a.ids.length - b.ids.length));
+}
+
+// "AccountService.normalizeIndustry(List<Account> accounts)"
+function signatureOf(m) {
+  if (m.kind === 'trigger') return m.label;
+  const name = m.kind === 'constructor' ? `new ${m.type.display}` : `${m.type.display}.${m.name}`;
+  return `${name}(${paramSig(m)})`;
+}
+const whereOf = (m) => `${m.file.unit.name}.${m.file.unit.kind === 'trigger' ? 'trigger' : 'cls'}, line ${m.startLine}`;
+const lineList = (lines) => {
+  const u = [...new Set(lines)].sort((a, b) => a - b);
+  return u.length ? `line${u.length === 1 ? '' : 's'} ${u.join(', ')}` : 'an unknown line';
+};
+
+function pathsHeading(count) {
+  const target = state.pick === 'method' && state.methodId
+    ? `Who calls ${signatureOf(state.index.methodsById.get(state.methodId))}`
+    : `How Apex reaches ${state.object}.${state.field?.name}`;
+  const org = state.mode === 'demo' ? 'demo org' : state.session?.apiHost;
+  return `${target}\n${count === 1 ? 'One Apex code path' : `${count} Apex code paths`}, from the entry point down${org ? ` · ${org}` : ''}`;
+}
+
+// one path: numbered steps, where each step calls the next, and what the last step does
+function pathText(p, n, total, rootInfo) {
+  const first = state.index.methodsById.get(p.ids[0]);
+  const e = first.entry;
+  const start = p.end === 'entry' ? `${e?.label || 'Entry point'}${e?.detail && e.detail !== e.label ? ` (${e.detail})` : ''}`
+    : p.end === 'orphan' ? 'No Apex caller found: may run from a Flow, Visualforce page, anonymous Apex or a managed package'
+      : 'Stopped at max depth: there are more callers above this';
+  const out = [`Path ${n + 1}${total > 1 ? ` of ${total}` : ''} · ${start}`];
+  p.ids.forEach((id, i) => {
+    const m = state.index.methodsById.get(id);
+    const last = i === p.ids.length - 1;
+    const tag = i === 0 && p.end === 'entry' && e ? `  [${e.label}]` : '';
+    out.push(`  ${i + 1}. ${signatureOf(m)}${tag}`);
+    out.push(`       ${whereOf(m)}`);
+    if (!last) {
+      const via = viaFor(id, p.ids[i + 1]);
+      const kinds = [...(via.kinds || [])].map((k) => KIND_LABEL[k]).filter(Boolean);
+      out.push(`       ↓ calls the next step at ${lineList(via.lines)}${kinds.length ? ` (${kinds.join(', ')})` : ''}`);
+    } else if (rootInfo) {
+      const refs = rootInfo.get(id).refs;
+      for (const access of ['write', 'read']) {
+        const rs = refs.filter((r) => r.access === access);
+        if (!rs.length) continue;
+        const how = [...new Set(rs.map((r) => HOW_LABEL[r.how] || r.how))].join(', ');
+        const possible = rs.every((r) => r.confidence === 'possible') ? ' (possible: the record type couldn’t be confirmed)' : '';
+        out.push(`       ★ ${access === 'write' ? 'WRITES' : 'READS'} ${state.object}.${state.field.name} at ${lineList(rs.map((r) => r.line))} (${how})${possible}`);
+      }
+    } else {
+      out.push('       ★ the method you picked');
+    }
+  });
+  return out;
+}
+
+function allPathsText(ordered, rootInfo, truncated) {
+  const lines = [pathsHeading(ordered.length)];
+  let group = null;
+  ordered.forEach((p, n) => {
+    if (p.end !== group) {
+      group = p.end;
+      lines.push('', `=== ${PATH_GROUPS[group]} (${ordered.filter((x) => x.end === group).length}) ===`);
+    }
+    lines.push('', ...pathText(p, n, ordered.length, rootInfo));
+  });
+  if (truncated) lines.push('', 'Only the first 400 paths are listed.');
+  lines.push('', COPY_FOOTER);
+  return lines.join('\n');
+}
+
+async function copyPaths(btn, text, done) {
+  btn.lastCopied = text; // (tests read it back)
+  try { await navigator.clipboard.writeText(text); } catch {
+    const ta = h('textarea', { style: 'position:fixed;opacity:0' }, text);
+    document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove();
+  }
+  const was = btn.innerHTML;
+  btn.classList.add('copied');
+  btn.textContent = btn.classList.contains('path-copy') ? '✓' : `✓ ${done}`;
+  setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = was; }, 1400);
 }
 
 function viaFor(fromId, toId) {
@@ -877,6 +980,7 @@ function restoreSelection() {
 }
 
 function showCodeEmpty() {
+  state.codeShown = null;
   $('#code').replaceChildren(h('div', { class: 'code-empty' }, 'Select a node to see its source'));
 }
 
@@ -892,65 +996,188 @@ const HOW_LABEL = {
   'dynamic-soql': 'dynamic SOQL', constructor: 'constructor', string: 'string literal',
 };
 
-function showCode(id, info) {
-  const m = state.index.methodsById.get(id);
-  const unit = m.file.unit;
+// What a node highlights in its source: the lines, the exact field tokens, and the Details entries.
+function codeMarks(m, info) {
   const hlLines = new Set();
   const hlCols = new Map(); // line -> columns of the exact field tokens
   let hlClass = 'hl-ref';
-  const refList = h('ul', { class: 'code-refs' });
+  const items = []; // { ln, parts: () => [nodes] }
   if (info.refs) {
     for (const r of info.refs) {
       hlLines.add(r.line);
       if (!hlCols.has(r.line)) hlCols.set(r.line, new Set());
       hlCols.get(r.line).add(r.col);
-      refList.append(h('li', { onclick: () => scrollToLine(r.line) },
-        h('span', { class: 'ln' }, `L${r.line}`),
-        h('span', { class: `badge ${r.access}` }, r.access),
-        h('span', {}, HOW_LABEL[r.how] || r.how),
-        r.confidence === 'possible' ? h('span', { class: 'badge possible' }, 'possible') : null));
+      items.push({
+        ln: r.line,
+        parts: () => [h('span', { class: `badge ${r.access}` }, r.access), h('span', {}, HOW_LABEL[r.how] || r.how),
+          r.confidence === 'possible' ? h('span', { class: 'badge possible' }, 'possible') : null],
+      });
     }
   } else if (info.via) {
     hlClass = 'hl-call';
     const callee = state.index.methodsById.get(info.childId);
     for (const ln of new Set(info.via.lines)) {
       hlLines.add(ln);
-      refList.append(h('li', { onclick: () => scrollToLine(ln) },
-        h('span', { class: 'ln' }, `L${ln}`), h('span', {}, `calls ${callee.label}`)));
+      items.push({ ln, parts: () => [h('span', {}, `calls ${callee.label}`)] });
     }
   } else if (info.self) {
     hlClass = 'hl-call';
     const ln = m.file.toks[m.nameTok]?.line ?? m.startLine;
     hlLines.add(ln);
-    refList.append(h('li', { onclick: () => scrollToLine(ln) },
-      h('span', { class: 'ln' }, `L${ln}`), h('span', {}, 'declaration')));
+    items.push({ ln, parts: () => [h('span', {}, 'declaration')] });
   }
+  return { hlLines, hlCols, hlClass, items };
+}
 
-  const url = setupUrl(unit);
-  const head = h('div', { class: 'code-head' },
-    h('div', { class: 'code-title' }, m.label),
-    h('div', { class: 'code-sub' },
-      h('span', {}, `${unit.name}.${unit.kind === 'trigger' ? 'trigger' : 'cls'} · lines ${m.startLine}–${m.endLine}`),
-      entryBadge(m.entry),
-      url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null),
-    refList.childElementCount ? codeDetails(refList, codeSummary(info, refList.childElementCount)) : null);
+function refsList(items, onPick) {
+  return h('ul', { class: 'code-refs' }, items.map((it) => h('li', { onclick: () => onPick(it.ln) },
+    h('span', { class: 'ln' }, `L${it.ln}`), ...it.parts())));
+}
 
-  const lines = unit.body.split('\n');
+// the source rows for a line range; in the whole class, the selected method's lines are marked
+function sourcePre(lines, range, marks, method) {
   const pre = h('pre', { class: 'src' });
   let inBlock = false;
-  for (let n = m.startLine; n <= Math.min(m.endLine, lines.length); n++) {
-    const { html, inBlock: ib } = highlight(lines[n - 1], inBlock, hlCols.get(n));
+  for (let n = 1; n < range[0]; n++) inBlock = highlight(lines[n - 1] ?? '', inBlock).inBlock;
+  for (let n = range[0]; n <= range[1]; n++) {
+    const { html, inBlock: ib } = highlight(lines[n - 1] ?? '', inBlock, marks.hlCols.get(n));
     inBlock = ib;
     const txt = h('span', { class: 'txt' });
     txt.innerHTML = html || ' ';
-    pre.append(h('div', { class: `row${hlLines.has(n) ? ' ' + hlClass : ''}`, 'data-line': n },
+    const inMethod = method && n >= method[0] && n <= method[1];
+    pre.append(h('div', { class: `row${marks.hlLines.has(n) ? ' ' + marks.hlClass : ''}${inMethod ? ' in-method' : ''}`, 'data-line': n },
       h('span', { class: 'gutter' }, n), txt));
   }
-  const scroller = h('div', { class: 'code-scroll' }, pre);
-  $('#code').replaceChildren(head, scroller);
-  const first = Math.min(...hlLines);
-  if (Number.isFinite(first)) scrollToLine(first);
+  return pre;
 }
+
+// what the code panel can show of a method: just it, or its whole class (a trigger is always whole)
+function codeScope(m) {
+  const unit = m.file.unit;
+  const lines = unit.body.split('\n');
+  const canWhole = m.kind !== 'trigger' && (m.startLine > 1 || m.endLine < lines.length);
+  const whole = canWhole && state.codeWhole;
+  const method = [m.startLine, Math.min(m.endLine, lines.length)];
+  const ext = unit.kind === 'trigger' ? 'trigger' : 'cls';
+  const what = unit.kind === 'trigger' ? 'trigger' : 'class';
+  return {
+    unit, lines, canWhole, whole, method, ext,
+    range: whole ? [1, lines.length] : method,
+    copyLabel: whole || !canWhole ? `Copy ${what}` : m.kind === 'constructor' ? 'Copy constructor' : 'Copy method',
+    copyText: whole || !canWhole ? unit.body : lines.slice(method[0] - 1, method[1]).join('\n'),
+    copyDone: whole || !canWhole ? `${unit.name}.${ext} copied` : `${m.label} copied`,
+  };
+}
+
+function copyButton(sc) {
+  return h('button', {
+    class: 'ghost small code-copy', title: sc.whole || !sc.canWhole ? `Copy the whole ${sc.unit.name}.${sc.ext}` : 'Copy this method’s code',
+    onclick: (e) => copyCode(e.currentTarget, sc.copyText),
+  }, h('span', { 'aria-hidden': 'true' }, '⧉'), ` ${sc.copyLabel}`);
+}
+
+async function copyCode(btn, text) {
+  btn.lastCopied = text; // (tests read it back)
+  try { await navigator.clipboard.writeText(text); } catch {
+    const ta = h('textarea', { style: 'position:fixed;opacity:0' }, text);
+    document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove();
+  }
+  const was = btn.innerHTML;
+  btn.classList.add('copied');
+  btn.textContent = '✓ Copied';
+  setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = was; }, 1400);
+}
+
+function showCode(id, info) {
+  state.codeShown = { id, info };
+  const m = state.index.methodsById.get(id);
+  const marks = codeMarks(m, info);
+  const sc = codeScope(m);
+  const url = setupUrl(sc.unit);
+  const toggle = () => { state.codeWhole = !state.codeWhole; showCode(id, info); };
+  const head = h('div', { class: 'code-head' },
+    h('div', { class: 'code-title-row' },
+      h('div', { class: 'code-title' }, m.label),
+      h('button', { class: 'code-expand', title: 'Expand: source and details side by side, full screen (F)', 'aria-label': 'Expand to full screen', onclick: () => openCodeFocus(id, info) },
+        h('span', { 'aria-hidden': 'true' }, '⤢'), 'Expand')),
+    h('div', { class: 'code-sub' },
+      h('span', {}, `${sc.unit.name}.${sc.ext} · lines ${sc.range[0]}–${sc.range[1]}`),
+      entryBadge(m.entry),
+      sc.canWhole ? h('button', { class: 'link', onclick: toggle }, sc.whole ? 'Method only' : 'Whole class') : null,
+      copyButton(sc),
+      url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null),
+    marks.items.length ? codeDetails(refsList(marks.items, scrollToLine), codeSummary(info, marks.items.length)) : null);
+  const scroller = h('div', { class: 'code-scroll' }, sourcePre(sc.lines, sc.range, marks, sc.whole ? sc.method : null));
+  $('#code').replaceChildren(head, scroller);
+  const first = Math.min(...marks.hlLines);
+  scrollToLine(Number.isFinite(first) ? first : sc.method[0]);
+}
+
+// ---------- expanded: source and details full screen (like Debug Logs) ----------
+function openCodeFocus(id, info) {
+  if (document.querySelector('.fx')) return;
+  const m = state.index.methodsById.get(id);
+  const marks = codeMarks(m, info);
+  const opener = document.activeElement;
+  const srcSub = h('span', { class: 'fx-sub' });
+  const tools = h('span', { class: 'fx-head-extra' });
+  const srcBody = h('div', { class: 'fx-pane-body' });
+  let scroller = null;
+  const pick = (ln) => {
+    for (const r of scroller.querySelectorAll('.row.fx-pick')) r.classList.remove('fx-pick');
+    const row = scroller.querySelector(`.row[data-line="${ln}"]`);
+    if (row) { row.classList.add('fx-pick'); row.scrollIntoView({ block: 'center' }); }
+  };
+  function drawSource() {
+    const sc = codeScope(m);
+    srcSub.textContent = `${sc.unit.name}.${sc.ext} · lines ${sc.range[0]}–${sc.range[1]}`;
+    const url = setupUrl(sc.unit);
+    tools.replaceChildren(...[srcSub, // (filter: replaceChildren would print a null as "null")
+      sc.canWhole ? h('button', { class: 'link', onclick: () => { state.codeWhole = !state.codeWhole; drawSource(); if (state.codeShown) showCode(state.codeShown.id, state.codeShown.info); } }, sc.whole ? 'Method only' : 'Whole class') : null,
+      copyButton(sc),
+      url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null].filter(Boolean));
+    scroller = h('div', { class: 'code-scroll fx-src' }, sourcePre(sc.lines, sc.range, marks, sc.whole ? sc.method : null));
+    srcBody.replaceChildren(scroller);
+    const first = Math.min(...marks.hlLines);
+    requestAnimationFrame(() => scroller.querySelector(`.row[data-line="${Number.isFinite(first) ? first : sc.method[0]}"]`)?.scrollIntoView({ block: 'center' }));
+  }
+  const sum = codeSummary(info, marks.items.length);
+  const details = h('div', { class: 'fx-details' },
+    sum.badges.length ? h('div', { class: 'cd-badges fx-badges' }, sum.badges.map(([t, k]) => h('span', { class: `cd-badge ${k || ''}` }, t))) : null,
+    marks.items.length ? refsList(marks.items, pick) : h('p', { class: 'lv-muted fx-none' }, 'Nothing to point at in this step.'));
+  const left = h('section', { class: 'fx-pane fx-left' },
+    h('div', { class: 'fx-pane-head' }, h('span', { class: 'fx-pane-title' }, 'Apex'), tools), srcBody);
+  const right = h('section', { class: 'fx-pane fx-right' },
+    h('div', { class: 'fx-pane-head' }, h('span', { class: 'fx-pane-title' }, sum.title)), details);
+  const grid = h('div', { class: 'fx-grid' }, left, right);
+  grid.append(resizable({
+    handle: h('div', { class: 'fx-split' }), pane: left, host: grid, cssVar: '--fx-left', edge: 'end',
+    min: 280, max: () => grid.clientWidth - 300, key: 'ff-split-fx-cf', label: 'Resize source and details',
+  }));
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); opener?.focus?.(); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  const card = h('div', { class: 'fx-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': `${m.label}: source and details`, tabindex: '-1' },
+    h('header', { class: 'fx-head' },
+      h('div', { class: 'fx-title' }, h('b', {}, m.label), entryBadge(m.entry)),
+      h('span', { class: 'fx-keys' }, 'Click a line in Details to find it in the code · Esc to close'),
+      h('button', { class: 'fx-x', title: 'Close (Esc)', 'aria-label': 'Close', onclick: () => close() }, '×')),
+    grid);
+  const wrap = h('div', { class: 'fx' }, card);
+  wrap.addEventListener('pointerdown', (e) => { if (e.target === wrap) close(); });
+  document.addEventListener('keydown', onKey, true);
+  document.body.append(wrap);
+  drawSource();
+  card.focus();
+}
+
+// F opens the expanded view of what the code panel shows (not while typing)
+document.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() !== 'f' || e.ctrlKey || e.metaKey || e.altKey || state.appView !== 'flow' || !state.codeShown) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable="true"]') || document.querySelector('.fx, .overlay:not([hidden])')) return;
+  if (!$('#code .code-head')) return;
+  e.preventDefault();
+  openCodeFocus(state.codeShown.id, state.codeShown.info);
+});
 
 function codeSummary(info, n) {
   if (info.refs) {
