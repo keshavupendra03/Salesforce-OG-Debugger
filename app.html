@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="informant.css">
   <link rel="stylesheet" href="exec.css">
   <link rel="stylesheet" href="import.css">
+  <link rel="stylesheet" href="explorer.css">
 </head>
 <body>
   <header class="topbar">
@@ -27,6 +28,7 @@
       <button role="tab" data-app-view="search" aria-selected="false" id="nav-search" disabled title="FBI Search: Full-Base Inspector">FBI Search</button>
       <button role="tab" data-app-view="api" aria-selected="false" id="nav-api" disabled title="The Informant: an API client (collections, environments, cURL import)">The Informant</button>
       <button role="tab" data-app-view="exec" aria-selected="false" id="nav-exec" disabled title="The OG Executor: run Batch, Queueable and Schedulable Apex, or any Anonymous Apex">The OG Executor</button>
+      <button role="tab" data-app-view="explorer" aria-selected="false" id="nav-explorer" disabled title="OG Explorer: read classes, triggers, LWC, Aura and Visualforce; click a call to jump to it">OG Explorer</button>
     </nav>
     <div class="org" id="org"></div>
     <div class="scan" id="scan">
@@ -117,6 +119,8 @@
   <main class="inf" id="view-api" hidden></main>
 
   <main class="ox" id="view-exec" hidden></main>
+
+  <main class="cx" id="view-explorer" hidden></main>
 
   <footer class="credits" aria-label="About this extension">
     <div class="credits-brand">

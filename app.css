@@ -23,6 +23,7 @@
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --e-trigger: #dc2626; --e-lwc: #0d9488; --e-flow: #7c3aed; --e-rest: #16a34a; --e-soap: #4b5563;
+  --e-process: #6d28d9; --e-validation: #b91c1c; --e-formula: #0f766e; --e-aura: #9333ea;
   --e-vf: #0369a1; --e-batch: #d97706; --e-schedule: #a16207; --e-queueable: #db2777; --e-future: #64748b; --e-test: #64748b;
   color-scheme: light;
 }
@@ -383,6 +384,25 @@ button.chip:hover { color: var(--text); }
 .card .name { font-family: var(--mono); font-size: 12.5px; font-weight: 550; word-break: break-all; }
 .card .meta { color: var(--faint); font-size: 11.5px; }
 .card .recursion { color: var(--faint); font-style: italic; font-size: 12px; }
+/* outside Apex: Flows, rules, formulas, components */
+.card.use-card { border-style: dashed; }
+.card.use-card.inactive, .path.inactive { opacity: .6; }
+.badge.uses { color: var(--muted); background: var(--panel-2); }
+.chip.outside b { color: #7c3aed; }
+.usage-note { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; padding: 6px 10px; border-radius: 8px; font-size: 12px; color: var(--muted); background: var(--panel-2); }
+.usage-note .lg-spinner { width: 13px; height: 13px; }
+.usage-note.warn { color: #b45309; }
+.src .row.file-row .txt { font-weight: 650; color: var(--muted); }
+.src .txt.muted { color: var(--muted); white-space: normal; font-family: var(--sans); }
+/* trigger framework: triggers that only reach a branch if the framework picked its handler */
+.card .via-fw { color: var(--faint); font-style: italic; }
+.tree-fw-btn { display: inline-flex; align-items: center; gap: 6px; margin: 2px 0; padding: 5px 10px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--muted); font-size: 12px; text-align: left; }
+.tree-fw-btn:hover { color: var(--text); border-color: var(--accent); }
+.tree-fw-show { color: var(--accent); font-weight: 600; margin-left: 4px; }
+.tree-fw-head { display: flex; align-items: center; gap: 10px; margin: 4px 0 6px; font-size: 12px; color: var(--muted); }
+.tree-fw > li, .tree li.tree-fw { list-style: none; }
+.fw-unlikely > .card { opacity: .7; }
+.card .fw-why { flex-basis: 100%; font-size: 11.5px; }
 
 .badge {
   font-size: 10.5px;
@@ -446,6 +466,12 @@ button.chip:hover { color: var(--text); }
 .paths-note { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
 .paths-tools { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
 .paths-tools .path-copy-all { margin-left: auto; }
+.paths-dispatch-note { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border-radius: 8px; font-size: 12px; line-height: 1.5; color: var(--muted); background: var(--panel-2); border: 1px dashed var(--line-strong); }
+.paths-dispatch-note .link { flex: none; font-size: 12px; }
+.paths-fold { display: flex; flex-direction: column; gap: 8px; }
+.paths-fold[hidden] { display: none; }
+.paths-fold .path { opacity: .72; }
+.path-why { flex-basis: 100%; font-size: 11.5px; color: var(--muted); }
 .path { position: relative; padding-right: 40px; }
 .path-copy { position: absolute; top: 7px; right: 7px; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--faint); font-size: 13px; }
 .path:hover .path-copy, .path-copy:focus-visible { color: var(--muted); border-color: var(--line); background: var(--panel); }
@@ -789,3 +815,25 @@ button.chip:hover { color: var(--text); }
   .code { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
   .picker { grid-row: 1; }
 }
+
+/* ---------- clickable code (OG Explorer, Code Flow and Debug Logs code panels) ---------- */
+.tk-link { cursor: pointer; border-radius: 3px; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.tk-link:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); text-decoration-color: var(--accent); }
+.cl-card { position: fixed; z-index: 95; width: min(480px, calc(100vw - 16px)); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 14px 40px rgba(16, 24, 40, .22); font-size: 12px; }
+.cl-card b { font: 650 12.5px var(--mono); word-break: break-all; }
+.cl-card small { color: var(--muted); font-size: 11.5px; }
+.cl-card pre { margin: 4px 0 2px; padding: 6px 8px; max-height: 140px; overflow: hidden; border-radius: 6px; background: var(--code-bg); border: 1px solid var(--line); font: 11.5px/1.5 var(--mono); white-space: pre; }
+.cl-card ul { margin: 2px 0; padding-left: 16px; font: 11.5px var(--mono); }
+.cl-card .cl-keys { color: var(--faint); font-size: 10.5px; }
+.cl-card .cl-possible { color: #b45309; }
+.cl-menu-head { padding: 6px 9px 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
+.cl-menu .dx-mi { font-family: var(--mono); font-size: 12px; }
+.cl-peek { margin: 4px 16px 8px 52px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 9px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden; font-family: var(--sans); white-space: normal; }
+.cl-peek-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--accent-soft); border-bottom: 1px solid var(--line); }
+.cl-peek-head b { font: 650 12px var(--mono); }
+.cl-peek-head small { color: var(--muted); font-size: 11px; }
+.cl-grow { flex: 1; }
+.cl-x { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--muted); font-size: 16px; line-height: 1; }
+.cl-x:hover { background: var(--panel-2); color: var(--text); }
+.cl-peek-body { max-height: 360px; overflow: auto; background: var(--code-bg); }
+.cl-peek-body .src { padding: 6px 0; }

@@ -1,9 +1,13 @@
-import { parseUnit } from './apex/parser.js';
+import { parseUnit, implementsOf } from './apex/parser.js';
+import { apexLinks, apexHandlers, wireLinks } from './explorer/code-links.js';
 import { CodeIndex, ROOT_ENTRY_KINDS } from './apex/analyzer.js';
 import { getSession } from './session.js';
 import { SfApi } from './sf-api.js';
 import { loadOrgCode, clearCache } from './code-loader.js';
-import { DEMO_UNITS, DEMO_OBJECTS, DEMO_FIELDS } from './demo-data.js';
+import { DEMO_UNITS, DEMO_FRAMEWORK_UNITS, DEMO_OBJECTS, DEMO_FIELDS } from './demo-data.js';
+
+// app.html?demo=framework adds a sample trigger framework (dispatcher + handlers picked at run time)
+const demoUnits = () => (new URLSearchParams(location.search).get('demo') === 'framework' ? [...DEMO_UNITS, ...DEMO_FRAMEWORK_UNITS] : DEMO_UNITS);
 import { h } from './dom.js';
 import { highlight } from './apex/highlight.js';
 import { resizable, codeDetails, collapsibleSide } from './layout.js';
@@ -11,6 +15,8 @@ import { setupCoffee } from './coffee.js';
 import { setupFeedback } from './feedback.js';
 import { setupFun } from './fun.js';
 import { ApexVersions } from './logs/apex-versions.js';
+import { triggerFacts, handlerMatch, buildDispatchMap, dispatchMetadataTypes } from './apex/dispatch.js';
+import { fieldUsages, methodUsages, USAGE_LABEL } from './usage/usage.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -32,6 +38,7 @@ const state = {
   apiView: null,
   execView: null,
   importView: null,
+  explorerView: null,
   demoData: null, // one pretend org for Data Export and Data Import
   pick: 'field', // 'field' | 'method' (left panel tab)
   cls: null, // type key
@@ -41,6 +48,10 @@ const state = {
   selectedKey: null,
   codeWhole: false, // code panel: the whole class instead of just the method
   codeShown: null,
+  dispatchMap: null, // custom metadata: which handler class each trigger-framework key names
+  usage: null, // Flows, validation rules, LWC, Aura, Visualforce: { status, src, note }
+  searchSources: null,
+  formulas: new Map(), // object (lower) → its formula fields, or a promise of them
 };
 
 // ---------- small helpers ----------
@@ -86,12 +97,13 @@ async function init() {
   setupCoffee($('.credits-links'));
   setupFeedback($('.credits-links'));
   setupFun($('.topbar'));
+  setupTabScroller($('.views'));
   bindUi();
   setupSplitters();
   renderClasses();
   renderMethods();
   const params = new URLSearchParams(location.search);
-  const startView = ['logs', 'data', 'import', 'search', 'api', 'exec'].includes(params.get('view')) ? params.get('view') : null;
+  const startView = ['logs', 'data', 'import', 'search', 'api', 'exec', 'explorer'].includes(params.get('view')) ? params.get('view') : null;
   if (params.has('demo')) {
     if (startView) { state.mode = 'demo'; enableViews(); switchView(startView); }
     return startDemo();
@@ -144,10 +156,49 @@ function flowRail() {
 
 // ---------- top-level views ----------
 
+// Many tabs, narrow window: ‹ › buttons and soft edges show there is more, the wheel scrolls sideways.
+function setupTabScroller(nav) {
+  if (!nav) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'views-wrap';
+  nav.before(wrap);
+  const arrow = (dir) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `views-arrow views-${dir < 0 ? 'prev' : 'next'}`;
+    b.textContent = dir < 0 ? '‹' : '›';
+    b.title = dir < 0 ? 'More tabs on the left' : 'More tabs on the right';
+    b.setAttribute('aria-label', b.title);
+    b.tabIndex = -1;
+    b.addEventListener('click', () => nav.scrollBy({ left: dir * Math.max(120, nav.clientWidth * 0.6), behavior: 'smooth' }));
+    return b;
+  };
+  const prev = arrow(-1), next = arrow(1);
+  wrap.append(prev, nav, next);
+  const update = () => {
+    const max = nav.scrollWidth - nav.clientWidth;
+    const atStart = nav.scrollLeft <= 1, atEnd = nav.scrollLeft >= max - 1;
+    wrap.classList.toggle('overflowing', max > 1);
+    wrap.classList.toggle('more-left', max > 1 && !atStart);
+    wrap.classList.toggle('more-right', max > 1 && !atEnd);
+    prev.disabled = atStart;
+    next.disabled = atEnd;
+  };
+  nav.addEventListener('scroll', update, { passive: true });
+  nav.addEventListener('wheel', (e) => {
+    if (nav.scrollWidth <= nav.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    nav.scrollLeft += e.deltaY;
+  }, { passive: false });
+  new ResizeObserver(update).observe(nav);
+  update();
+}
+
 async function switchView(view) {
   if (state.appView === view) return;
   state.appView = view;
   for (const b of document.querySelectorAll('.views button')) b.setAttribute('aria-selected', String(b.dataset.appView === view));
+  document.querySelector(`.views button[data-app-view="${view}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
   $('#view-flow').hidden = view !== 'flow';
   $('#view-logs').hidden = view !== 'logs';
   $('#view-data').hidden = view !== 'data';
@@ -155,6 +206,7 @@ async function switchView(view) {
   $('#view-api').hidden = view !== 'api';
   $('#view-exec').hidden = view !== 'exec';
   $('#view-import').hidden = view !== 'import';
+  $('#view-explorer').hidden = view !== 'explorer';
   $('#rescan').hidden = view !== 'flow' || state.mode !== 'org';
   if (view === 'logs') state.logsView ||= loadLogsView();
   if (view === 'data') state.dataView ||= loadDataView();
@@ -162,13 +214,50 @@ async function switchView(view) {
   if (view === 'api') state.apiView ||= loadApiView();
   if (view === 'exec') state.execView ||= loadExecView();
   if (view === 'import') state.importView ||= loadImportView();
+  if (view === 'explorer') state.explorerView ||= loadExplorerView();
   if (state.logsView) (await state.logsView).setActive(state.appView === 'logs');
   if (state.dataView) (await state.dataView).setActive(state.appView === 'data');
   if (state.searchView) (await state.searchView).setActive(state.appView === 'search');
   if (state.apiView) (await state.apiView).setActive(state.appView === 'api');
   if (state.execView) (await state.execView).setActive(state.appView === 'exec');
   if (state.importView) (await state.importView).setActive(state.appView === 'import');
+  if (state.explorerView) (await state.explorerView).setActive(state.appView === 'explorer');
 }
+
+async function loadExplorerView() {
+  const { mountExplorer } = await import('./explorer/explorer-ui.js');
+  return mountExplorer($('#view-explorer'), {
+    getIndex: () => state.indexPromise,
+    sources: await searchSources(),
+    orgKey: state.session?.orgId || 'demo',
+    setupUrl,
+    // a method's call tree in Code Flow
+    openCodeFlow: async (id) => {
+      const m = state.index.methodsById.get(id);
+      if (!m) return;
+      await switchView('flow');
+      switchPick('method');
+      selectClass(m.type.key);
+      selectMethod(m.id);
+    },
+    openExecutor: () => switchView('exec'),
+    isAsync: (type) => [...implementsOf(type)].some((i) => /^(batchable|queueable|schedulable)/.test(i)),
+  });
+}
+
+// any code link (Code Flow, Debug Logs): continue reading in OG Explorer
+async function openInExplorer(target, how = {}) {
+  await switchView('explorer');
+  (await state.explorerView).open(target, how);
+}
+
+// links of a parsed Apex file, and what hovering / clicking / Alt+clicking them does
+const fileLinks = new WeakMap();
+function linksFor(file) {
+  if (!fileLinks.has(file)) fileLinks.set(file, apexLinks(state.index, file));
+  return fileLinks.get(file);
+}
+const codeLinkHandlers = () => apexHandlers(state.index, { open: (t, how) => openInExplorer(t, how), linksOf: linksFor });
 
 async function demoData() {
   state.demoData ||= new (await import('./data/demo-data-backend.js')).DemoDataBackend();
@@ -222,17 +311,22 @@ function enableViews() {
   $('#nav-api').disabled = false;
   $('#nav-exec').disabled = false;
   $('#nav-import').disabled = false;
+  $('#nav-explorer').disabled = false;
 }
 
-async function loadSearchView() {
-  const { mountSearch } = await import('./search/search-ui.js');
-  const sources = state.mode === 'demo'
+async function searchSources() {
+  state.searchSources ||= state.mode === 'demo'
     ? new (await import('./search/demo-search.js')).DemoSearchSources()
     : new (await import('./search/search-sources.js')).SfSearchSources(state.api, state.session, {
       // Apex comes from the Code Flow scan (already running, cached on disk), so it's never downloaded twice
       getApexUnits: async () => (await state.indexPromise).files.map((f) => f.unit),
     });
-  return mountSearch($('#view-search'), sources);
+  return state.searchSources;
+}
+
+async function loadSearchView() {
+  const { mountSearch } = await import('./search/search-ui.js');
+  return mountSearch($('#view-search'), await searchSources());
 }
 
 async function loadDataView() {
@@ -251,6 +345,13 @@ async function loadLogsView() {
   return mountLogs($('#view-logs'), backend, {
     getSource: getApexSource,
     rescan: rescanApex,
+    // clickable calls in the code panel, when the shown source is the scanned one
+    codeLinks: (unit) => {
+      const file = state.index?.files.find((f) => f.unit.id === unit.id && f.unit.body === unit.body);
+      if (!file) return null;
+      const L = linksFor(file);
+      return { byLine: L.byLine, wire: (pre) => wireLinks(pre, L, codeLinkHandlers()) };
+    },
     setupUrl,
     // the Code Flow scan of the org's Apex, used by Field Trace
     getIndex: () => state.indexPromise,
@@ -310,7 +411,7 @@ async function rescanApex() {
 
 async function loadApexSource({ kind, id, name }) {
   const lname = name?.toLowerCase();
-  if (state.mode === 'demo') return DEMO_UNITS.find((u) => u.kind === kind && u.name.toLowerCase() === lname) || null;
+  if (state.mode === 'demo') return demoUnits().find((u) => u.kind === kind && u.name.toLowerCase() === lname) || null;
   const id15 = id?.slice(0, 15);
   const scanned = state.index?.files.find(({ unit: u }) => u.kind === kind
     && ((id15 && u.id.slice(0, 15) === id15) || (!id15 && u.name.toLowerCase() === lname)));
@@ -332,7 +433,7 @@ async function startDemo() {
   state.objects = DEMO_OBJECTS;
   renderObjects();
   setScan('Parsing sample code…', 'busy', 0.5);
-  state.indexPromise = buildIndex(DEMO_UNITS);
+  state.indexPromise = buildIndex(demoUnits());
   state.index = await state.indexPromise;
   scanDone();
   await selectObject('Account');
@@ -365,6 +466,7 @@ async function scanOrg() {
     scanDone(downloaded, performance.now() - t0);
     if (state.field) runAnalysis();
     else if (state.pick === 'method') rerender(true);
+    loadDispatchMap(units);
     return index;
   } catch (e) {
     setScan(`Scan failed: ${e.message}`, 'error');
@@ -574,6 +676,8 @@ async function selectField(name) {
 function runAnalysis() {
   if (!state.index || !state.field) return;
   state.analysis = state.index.analyzeField(state.object, state.field.name);
+  loadUsage();
+  loadFormulas(state.object);
   rerender(true);
 }
 
@@ -618,36 +722,43 @@ function rerender(autoExpand = false) {
   if (state.pick === 'method') return renderMethodFlow(autoExpand);
   if (!state.analysis) return showFlowEmpty();
   const { roots, hiddenPossible } = rootsFor(state.analysis);
-  const { paths, truncated } = state.index.entryPaths(roots.map((r) => r.method.id), state.opts);
-  renderHead(roots, paths, hiddenPossible);
+  const uses = fieldUses();
+  const { paths, truncated } = withUsages(classifyPaths(state.index.entryPaths(roots.map((r) => r.method.id), state.opts)), uses);
+  renderHead(roots, paths, hiddenPossible, uses);
   const body = $('#flow-body');
   body.replaceChildren();
-  if (!roots.length) {
-    body.append(h('div', { class: 'empty' },
-      h('p', { class: 'empty-title' }, 'No Apex references found'),
+  if (!roots.length && !uses.length) {
+    body.append(...[h('div', { class: 'empty' },
+      h('p', { class: 'empty-title' }, state.usage?.status === 'ready' ? 'Not used anywhere we can see' : 'No Apex references found'),
       h('p', { class: 'empty-sub' }, hiddenPossible
         ? `${plural(hiddenPossible, 'possible match')} hidden — turn on “Show possible matches” to review them.`
-        : 'This field isn’t referenced by unmanaged Apex. It may still be used by Flows, formulas, validation rules or LWC.')));
+        : state.usage?.status === 'ready' ? 'Nothing in unmanaged Apex, Flows, Process Builder, validation rules, formula fields, LWC, Aura or Visualforce uses this field.'
+          : 'This field isn’t referenced by unmanaged Apex. Still looking in Flows, validation rules, formulas, LWC, Aura and Visualforce…')),
+    usageNote()].filter(Boolean)); // (append would print a null as "null")
     showCodeEmpty();
     return;
   }
+  const note = usageNote();
+  if (note) body.append(note);
   if (state.view === 'tree') {
-    body.append(renderTree(roots));
+    body.append(renderTree(roots, uses));
     expandAll(60); // small trees open fully; big ones show the first levels
   } else {
     body.append(renderPaths(paths, new Map(roots.map((r) => [r.method.id, r])), truncated));
   }
-  if (autoExpand) selectNode(`ref:${roots[0].method.id}`, roots[0].method.id, { refs: roots[0].refs });
+  if (autoExpand && roots.length) selectNode(`ref:${roots[0].method.id}`, roots[0].method.id, { refs: roots[0].refs });
+  else if (autoExpand && uses.length) selectNode(`use:${uses[0].key}`, null, { usage: uses[0] });
   else restoreSelection();
 }
 
 function renderMethodFlow(autoExpand) {
   const m = state.methodId && state.index?.methodsById.get(state.methodId);
   if (!m) return showFlowEmpty();
-  const { paths, truncated } = state.index.entryPaths([m.id], state.opts);
+  loadUsage();
+  const { paths, truncated } = withUsages(classifyPaths(state.index.entryPaths([m.id], state.opts)));
   renderMethodHead(m, paths);
   const body = $('#flow-body');
-  body.replaceChildren();
+  body.replaceChildren(...[usageNote()].filter(Boolean));
   if (state.view === 'tree') {
     body.append(h('ul', { class: 'tree' }, methodNode(m.id, [m.id], { self: true })));
     expandAll(60);
@@ -659,16 +770,19 @@ function renderMethodFlow(autoExpand) {
 }
 
 function renderMethodHead(m, paths) {
+  const real = paths.filter((p) => p.end !== 'dispatch'); // not the ones only a trigger framework could take
   $('#flow-head').hidden = false;
   $('#flow-title').textContent = m.label;
   $('#flow-type').textContent = [m.isStatic ? 'static' : null, m.kind].filter(Boolean).join(' ');
   const callers = state.index.callers(m.id, state.opts);
-  const entries = new Set(paths.filter((p) => p.end === 'entry').map((p) => p.ids[0]));
+  const outside = methodUses(m).length;
+  const entries = new Set(paths.filter((p) => p.end === 'entry').map(entryKey));
   const chips = $('#chips');
+  const direct = callers.length + outside;
   chips.replaceChildren(
-    h('span', { class: 'chip read' }, h('b', {}, callers.length), callers.length === 1 ? 'direct caller' : 'direct callers'),
+    h('span', { class: 'chip read' }, h('b', {}, direct), direct === 1 ? 'direct caller' : 'direct callers'),
     h('span', { class: 'chip entries' }, h('b', {}, entries.size), entries.size === 1 ? 'entry point' : 'entry points'),
-    h('span', { class: 'chip entries' }, h('b', {}, paths.length), paths.length === 1 ? 'path' : 'paths'),
+    h('span', { class: 'chip entries' }, h('b', {}, real.length), real.length === 1 ? 'path' : 'paths'),
   );
   if (!state.opts.possible) {
     const hidden = state.index.callers(m.id, { ...state.opts, possible: true }).length - callers.length;
@@ -683,17 +797,20 @@ function renderMethodHead(m, paths) {
   syncFlowTools();
 }
 
-function renderHead(roots, paths, hiddenPossible) {
+function renderHead(roots, paths, hiddenPossible, uses = []) {
   $('#flow-head').hidden = false;
   $('#flow-title').textContent = `${state.object}.${state.field.name}`;
   $('#flow-type').textContent = state.field.type;
   const writers = roots.filter((r) => r.write).length;
   const readers = roots.filter((r) => r.read && !r.write).length;
-  const entries = new Set(paths.filter((p) => p.end === 'entry').map((p) => p.ids[0]));
+  const entries = new Set(paths.filter((p) => p.end === 'entry').map(entryKey));
   const chips = $('#chips');
   chips.replaceChildren(
     h('span', { class: 'chip write' }, h('b', {}, writers), writers === 1 ? 'method writes' : 'methods write'),
     h('span', { class: 'chip read' }, h('b', {}, readers), readers === 1 ? 'method only reads' : 'methods only read'),
+    state.usage?.status === 'ready'
+      ? h('span', { class: 'chip outside', title: 'Flows, Process Builder, validation rules, formula fields, LWC, Aura and Visualforce' }, h('b', {}, uses.length), uses.length === 1 ? 'use outside Apex' : 'uses outside Apex')
+      : h('span', { class: 'chip outside', title: 'Reading Flows, validation rules, formula fields, LWC, Aura and Visualforce' }, 'checking outside Apex…'),
     h('span', { class: 'chip entries' }, h('b', {}, entries.size), entries.size === 1 ? 'entry point' : 'entry points'),
   );
   if (hiddenPossible) {
@@ -728,24 +845,205 @@ const entryRank = (m) => { const i = ENTRY_ORDER.indexOf(m.entry?.kind); return 
 
 // ---------- tree view ----------
 
-function renderTree(roots) {
+// ---------- outside Apex: Flows, Process Builder, validation rules, formula fields, LWC, Aura, Visualforce ----------
+// The same sources FBI Search reads (and caches on disk), loaded once when Code Flow first needs them.
+const USAGE_GROUPS = ['flow', 'validation', 'lwc', 'aura', 'vf'];
+const USAGE_NAMES = { flow: 'Flows', validation: 'validation rules', lwc: 'LWC', aura: 'Aura', vf: 'Visualforce' };
+
+function loadUsage() {
+  if (state.usage) return state.usage.promise;
+  const u = { status: 'loading', src: {}, note: 'Also looking in Flows, validation rules, LWC, Aura and Visualforce…', failed: [] };
+  state.usage = u;
+  u.promise = (async () => {
+    const sources = await searchSources();
+    for (const g of USAGE_GROUPS) {
+      try {
+        u.src[g] = await sources.load(g, (text) => { u.note = `Also looking outside Apex: ${text}`; paintUsageNote(); });
+      } catch (e) {
+        u.src[g] = [];
+        u.failed.push(`${USAGE_NAMES[g]} (${e.message})`);
+      }
+    }
+    u.status = 'ready';
+    if (state.appView === 'flow' && (state.field || state.methodId)) rerender();
+  })();
+  return u.promise;
+}
+
+// formula fields of an object: from its describe (calculatedFormula)
+function loadFormulas(object) {
+  const k = String(object || '').toLowerCase();
+  if (!k || state.formulas.has(k) || state.mode !== 'org') return;
+  const p = state.api.request(`/services/data/${state.api.version}/sobjects/${encodeURIComponent(object)}/describe/`)
+    .then((d) => d.fields.filter((f) => f.calculated && f.calculatedFormula).map((f) => ({
+      name: f.name, label: f.label, formula: f.calculatedFormula,
+      link: `https://${state.session.apiHost.replace(/\.my\.salesforce\.com$/i, '.lightning.force.com')}/lightning/setup/ObjectManager/${object}/FieldsAndRelationships/view`,
+    })))
+    .catch(() => []);
+  state.formulas.set(k, p);
+  p.then((list) => {
+    state.formulas.set(k, list);
+    if (list.length && state.appView === 'flow' && state.object?.toLowerCase() === k && state.field) rerender();
+  });
+}
+
+function fieldUses() {
+  if (state.usage?.status !== 'ready' || !state.field) return [];
+  const f = state.formulas.get(state.object.toLowerCase());
+  return fieldUsages(state.usage.src, state.object, state.field.name, Array.isArray(f) ? f : []);
+}
+
+const useCache = new WeakMap(); // usage state → Map(method id → usages)
+function methodUses(m) {
+  if (state.usage?.status !== 'ready' || !m || m.kind !== 'method' || m.type.outer) return [];
+  let c = useCache.get(state.usage);
+  if (!c) { c = new Map(); useCache.set(state.usage, c); }
+  if (!c.has(m.id)) c.set(m.id, methodUsages(state.usage.src, { className: m.type.name, name: m.name, annots: m.annots }));
+  return c.get(m.id);
+}
+
+// Apex paths that start at a method a component / flow calls start at that component instead;
+// in Field mode, Flows and components that use the field directly are paths of their own
+function withUsages(result, fieldDirect = []) {
+  if (state.usage?.status !== 'ready') return result;
+  const out = fieldDirect.map((u) => ({ ids: [], end: 'entry', usage: u }));
+  const seen = new Set();
+  const addUse = (u, ids, p) => {
+    const k = `${u.key}|${ids.join('>')}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ ...p, ids, end: 'entry', usage: u, dispatch: null });
+  };
+  for (const p of result.paths) {
+    if (p.end === 'dispatch' || !p.ids.length) { out.push(p); continue; }
+    const first = methodUses(state.index.methodsById.get(p.ids[0]));
+    if (first.length) for (const u of first) addUse(u, p.ids, p);
+    else out.push(p);
+    // a component / flow that calls a method further down starts a shorter path there
+    for (let i = 1; i < p.ids.length; i++) for (const u of methodUses(state.index.methodsById.get(p.ids[i]))) addUse(u, p.ids.slice(i), p);
+  }
+  // the picked method itself, called straight from a component / flow
+  if (state.pick === 'method' && state.methodId) {
+    for (const u of methodUses(state.index.methodsById.get(state.methodId))) addUse(u, [state.methodId], { end: 'entry' });
+  }
+  return { ...result, paths: out };
+}
+const entryKey = (p) => (p.usage ? `use:${p.usage.key}` : p.ids[0]);
+
+function usageNote() {
+  const u = state.usage;
+  if (!u || (u.status === 'ready' && !u.failed.length)) return null;
+  return h('div', { class: `usage-note${u.status === 'ready' ? ' warn' : ''}` },
+    u.status === 'ready' ? h('span', {}, `Couldn’t read ${u.failed.join(', ')}: those aren’t shown.`) : [h('span', { class: 'lg-spinner' }), h('span', { class: 'usage-note-t' }, u.note)]);
+}
+function paintUsageNote() {
+  const t = document.querySelector('#flow-body .usage-note-t');
+  if (t && state.usage) t.textContent = state.usage.note;
+}
+
+const USE_ACCESS = { write: ['writes', 'write'], read: ['reads', 'read'], uses: ['uses', 'uses'] };
+function useBadges(refs) {
+  const out = [];
+  for (const k of ['write', 'read', 'uses']) if (refs.some((r) => r.access === k)) out.push(h('span', { class: `badge ${USE_ACCESS[k][1]}` }, USE_ACCESS[k][0]));
+  if (refs.length && refs.every((r) => r.possible)) out.push(h('span', { class: 'badge possible', title: 'Matched by the field name next to this object, not by an exact reference' }, 'possible'));
+  return out;
+}
+
+// a Flow / rule / component in the tree: a leaf (it's where things start)
+function usageNode(u, childId) {
+  const key = `use:${u.key}`;
+  const calls = u.refs.filter((r) => r.access === 'calls');
+  const card = h('div', { class: `card use-card${u.inactive ? ' inactive' : ''}`, 'data-key': key, title: u.sub },
+    h('span', { class: 'caret none' }, '▸'),
+    h('span', { class: 'name' }, u.name),
+    u.title && u.title !== u.name ? h('span', { class: 'meta' }, u.title) : null,
+    childId ? null : useBadges(u.refs),
+    entryBadge(u.entry),
+    u.inactive ? h('span', { class: 'badge possible' }, 'inactive') : null,
+    calls.length ? h('span', { class: 'meta' }, `calls it at ${calls.map((c) => c.where).join(', ')}`) : null);
+  card.addEventListener('click', () => selectNode(key, null, { usage: u }));
+  return h('li', { 'data-use': u.key }, card);
+}
+
+const USE_LINK = { flow: 'Open in Flow Builder ↗', process: 'Process Automation ↗', validation: 'Open the rule ↗', formula: 'Fields & Relationships ↗', lwc: 'Lightning Components ↗', aura: 'Lightning Components ↗', vf: 'Open in Setup ↗' };
+// the code panel for a Flow / rule / component: what it does with the field (or which call), and its source
+function showUsage(u) {
+  state.codeShown = null;
+  const refs = h('ul', { class: 'code-refs' }, u.refs.map((r) => h('li', { onclick: () => r.line && scrollToLine(r.line) },
+    h('span', { class: 'ln' }, r.line ? `L${r.line}` : '·'),
+    h('span', { class: `badge ${r.access === 'calls' ? 'kind' : USE_ACCESS[r.access]?.[1] || 'read'}` }, r.access === 'calls' ? 'calls' : USE_ACCESS[r.access]?.[0] || r.access),
+    h('span', {}, r.where),
+    r.possible ? h('span', { class: 'badge possible' }, 'possible') : null)));
+  const head = h('div', { class: 'code-head' },
+    h('div', { class: 'code-title' }, u.name),
+    h('div', { class: 'code-sub' },
+      h('span', {}, u.title && u.title !== u.name ? `${u.title} · ${u.sub}` : u.sub),
+      entryBadge(u.entry),
+      u.inactive ? h('span', { class: 'badge possible' }, 'inactive') : null,
+      u.link ? h('a', { href: u.link, target: '_blank', rel: 'noopener' }, USE_LINK[u.kind] || 'Open ↗') : null),
+    codeDetails(refs, { title: u.refs.some((r) => r.access === 'calls') ? 'Calls' : `Uses of ${state.field?.name || 'the field'}`, badges: [[`${u.refs.length} place${u.refs.length === 1 ? '' : 's'}`, 'call']] }));
+  const hl = new Set(u.refs.map((r) => r.line).filter(Boolean));
+  const pre = h('pre', { class: 'src' });
+  // a file's lines; the first file shown answers scrollToLine(n) (Details clicks), the others are labelled
+  const addLines = (text, label, marks, first) => {
+    if (label) pre.append(h('div', { class: 'row file-row' }, h('span', { class: 'gutter' }), h('span', { class: 'txt' }, label)));
+    String(text).split('\n').forEach((t, i) => pre.append(h('div', { class: `row${marks.has(i + 1) ? ' hl-ref' : ''}`, 'data-line': first ? i + 1 : `${label}:${i + 1}` },
+      h('span', { class: 'gutter' }, i + 1), h('span', { class: 'txt' }, t || ' '))));
+  };
+  if (u.source) addLines(u.source, null, hl, true);
+  else if (u.files) {
+    // only the files that mention it, each with its own marked lines
+    const marksOf = (f) => new Set(u.refs.filter((r) => u.files.length === 1 || r.where.startsWith(`${f.name},`)).map((r) => r.line).filter(Boolean));
+    u.files.filter((f) => marksOf(f).size).forEach((f, i) => addLines(f.text, u.files.length > 1 ? f.name : null, marksOf(f), i === 0));
+  } else {
+    pre.append(h('div', { class: 'row' }, h('span', { class: 'gutter' }), h('span', { class: 'txt muted' },
+      `${USAGE_LABEL[u.kind]}: the elements above use it. Open it in ${u.kind === 'process' ? 'Process Builder' : 'Flow Builder'} to see them.`)));
+  }
+  $('#code').replaceChildren(head, h('div', { class: 'code-scroll' }, pre));
+  const first = Math.min(...hl);
+  if (Number.isFinite(first)) scrollToLine(first);
+}
+
+// a path that starts at a Flow / component: it first, then the Apex steps
+function usagePathText(p, n, total, rootInfo) {
+  const u = p.usage;
+  const out = [`Path ${n + 1}${total > 1 ? ` of ${total}` : ''} · ${u.entry.label}${u.sub ? ` (${u.sub})` : ''}${u.inactive ? ' · inactive' : ''}`];
+  out.push(`  1. ${u.entry.label}: ${u.name}${u.title && u.title !== u.name ? ` (${u.title})` : ''}`);
+  if (!p.ids.length) {
+    for (const k of ['write', 'read', 'uses']) {
+      const rs = u.refs.filter((r) => r.access === k);
+      if (rs.length) out.push(`       ★ ${USE_ACCESS[k][0].toUpperCase()} ${state.object}.${state.field.name} in ${rs.map((r) => r.where).join('; ')}${rs.every((r) => r.possible) ? ' (possible)' : ''}`);
+    }
+    return out;
+  }
+  out.push(`       ↓ calls the next step in ${u.refs.map((r) => r.where).join('; ')}`);
+  const rest = pathText({ ...p, usage: null, end: 'entry' }, n, total, rootInfo).slice(1)
+    .map((l) => l.replace(/^ {2}(\d+)\. /, (_, k) => `  ${+k + 1}. `));
+  return [...out, ...rest];
+}
+
+function renderTree(roots, uses = []) {
   const fieldCard = h('div', { class: 'card root-card' }, `${state.object}.${state.field.name}`);
   const list = h('ul', {});
   for (const r of roots) list.append(methodNode(r.method.id, [r.method.id], { refs: r.refs }));
+  for (const u of uses) list.append(usageNode(u));
   return h('ul', { class: 'tree' },
     h('li', {}, fieldCard, h('div', { class: 'via-caption' }, 'used in'), list));
 }
 
 function methodNode(id, ancestry, info) {
   const m = state.index.methodsById.get(id);
-  const callers = state.index.callers(id, state.opts);
+  const all = state.index.callers(id, state.opts);
+  // triggers whose framework picks another handler for them don't really call down this branch
+  const { likely: callers, unlikely } = splitCallers(id, ancestry, all);
+  const outside = methodUses(m); // LWC, Aura, Visualforce, Flows calling it
   const key = info.refs ? `ref:${id}` : info.self ? `self:${id}` : `call:${id}<${info.childId}@${ancestry.length}:${ancestry.join('/')}`;
   const li = h('li', { 'data-id': id });
   const caret = h('button', {
-    class: `caret${callers.length ? '' : ' none'}`,
+    class: `caret${all.length || outside.length ? '' : ' none'}`,
     'aria-expanded': 'false',
     'aria-label': 'Show callers',
-    tabindex: callers.length ? '0' : '-1',
+    tabindex: all.length || outside.length ? '0' : '-1',
   }, '▸');
 
   const meta = [];
@@ -754,10 +1052,11 @@ function methodNode(id, ancestry, info) {
     meta.push(h('span', { class: 'meta' }, `calls at line ${[...new Set(info.via.lines)].join(', ')}`));
     for (const k of kinds) meta.push(h('span', { class: 'badge kind' }, k));
   }
-  if (!callers.length && !(m.entry && ROOT_ENTRY_KINDS.has(m.entry.kind))) {
+  if (!all.length && !outside.length && !(m.entry && ROOT_ENTRY_KINDS.has(m.entry.kind))) {
     meta.push(h('span', { class: 'entry orphan', title: 'Nothing in unmanaged Apex calls this. It may be invoked from a Flow, Visualforce page, anonymous Apex or a managed package.' }, 'no Apex callers'));
-  } else if (callers.length) {
-    meta.push(h('span', { class: 'meta' }, plural(callers.length, 'caller')));
+  } else if (all.length || outside.length) {
+    meta.push(h('span', { class: 'meta' }, plural(callers.length + outside.length, 'caller')));
+    if (unlikely.length) meta.push(h('span', { class: 'meta via-fw', title: 'Triggers that reach this only if their trigger framework picked the handler below. It picks a different one for them.' }, `+ ${unlikely.length} via trigger framework`));
   }
 
   const isPossible = info.refs ? info.refs.every((r) => r.confidence === 'possible')
@@ -772,13 +1071,34 @@ function methodNode(id, ancestry, info) {
     if (e.target === caret) return;
     selectNode(key, id, info);
   });
-  caret.addEventListener('click', () => toggle(li, caret, id, ancestry, callers));
+  caret.addEventListener('click', () => toggle(li, caret, id, ancestry, callers, unlikely));
   li.append(card);
-  li._expand = () => { if (caret.getAttribute('aria-expanded') === 'false' && callers.length) toggle(li, caret, id, ancestry, callers); };
+  li._expand = () => { if (caret.getAttribute('aria-expanded') === 'false' && (callers.length || outside.length)) toggle(li, caret, id, ancestry, callers, unlikely); };
   return li;
 }
 
-function toggle(li, caret, id, ancestry, callers) {
+// Callers of `id` in this branch of the tree (ancestry: from the root up to id). A trigger that gets here
+// only through a framework call to an interface / virtual method (the handler is picked at run time) counts
+// only if its framework picks the handler further down this branch. Same rules as the entry paths.
+function splitCallers(id, ancestry, callers) {
+  const likely = [];
+  const unlikely = [];
+  const M = (x) => state.index.methodsById.get(x);
+  const down = [...ancestry].reverse(); // id first, the root last
+  for (const c of callers) {
+    const t = M(c.from);
+    if (t?.kind !== 'trigger') { likely.push(c); continue; }
+    const chain = [c.from, ...down];
+    const hop = chain.findIndex((x, i) => i < chain.length - 1 && (i === 0 ? c.kinds : viaFor(x, chain[i + 1]).kinds)?.has('dispatch'));
+    if (hop < 0) { likely.push(c); continue; }
+    const handler = M(chain[hop + 1]).type;
+    const r = handlerMatch(factsOf(t), handler, state.index, state.dispatchMap);
+    if (r.ok) likely.push(c); else unlikely.push({ ...c, why: r.detail, handler: handler.display });
+  }
+  return { likely, unlikely };
+}
+
+function toggle(li, caret, id, ancestry, callers, unlikely = []) {
   const open = caret.getAttribute('aria-expanded') === 'true';
   if (open) {
     li.querySelector(':scope > ul.callers')?.remove();
@@ -795,6 +1115,29 @@ function toggle(li, caret, id, ancestry, callers) {
       continue;
     }
     ul.append(methodNode(c.from, [...ancestry, c.from], { via: c, childId: id }));
+  }
+  for (const u of methodUses(state.index.methodsById.get(id))) ul.append(usageNode(u, id));
+  if (unlikely.length) {
+    // folded: built only when asked, so Expand all doesn't open them
+    const more = h('li', { class: 'tree-fw' });
+    const show = () => {
+      const list = h('ul', { class: 'callers fw-list' });
+      for (const c of unlikely) {
+        const node = methodNode(c.from, [...ancestry, c.from], { via: c, childId: id });
+        node.classList.add('fw-unlikely');
+        node.querySelector('.card').append(h('span', { class: 'meta fw-why', title: c.why }, c.why));
+        node._expand = null;
+        list.append(node);
+      }
+      more.replaceChildren(h('div', { class: 'tree-fw-head' },
+        h('span', {}, `${plural(unlikely.length, 'trigger')} that reach this only if the trigger framework picked ${unlikely[0].handler}`),
+        h('button', { class: 'link', onclick: hide }, 'Hide')), list);
+    };
+    const hide = () => more.replaceChildren(h('button', { class: 'tree-fw-btn', onclick: show },
+      h('span', { 'aria-hidden': 'true' }, '+'), ` ${plural(unlikely.length, 'more trigger')} · only if the trigger framework picked ${unlikely[0].handler}`,
+      h('span', { class: 'tree-fw-show' }, 'Show')));
+    hide();
+    ul.append(more);
   }
   li.append(h('div', { class: 'via-caption' }, 'called by'), ul);
   caret.setAttribute('aria-expanded', 'true');
@@ -820,24 +1163,96 @@ function expandAll(limit) {
 // ---------- paths view ----------
 
 // rootInfo: Map<methodId, { refs }> in field mode, null when the target is a method.
+// ---------- trigger frameworks: keep the paths a trigger can really take ----------
+// A path that starts at a trigger and then goes through an interface / virtual call reaches every handler
+// class in the code; at run time the framework picks one per trigger. Paths to a handler this trigger doesn't
+// use move to the "dispatch" group (still shown, collapsed). See src/apex/dispatch.js.
+const factsCache = new WeakMap();
+// what a trigger says about its handler, read once per scan
+function factsOf(trigger) {
+  let facts = factsCache.get(state.index);
+  if (!facts) { facts = new Map(); factsCache.set(state.index, facts); }
+  if (!facts.has(trigger.id)) facts.set(trigger.id, triggerFacts(trigger, state.index));
+  return facts.get(trigger.id);
+}
+function classifyPaths(result) {
+  const M = (id) => state.index.methodsById.get(id);
+  const paths = result.paths.map((p) => {
+    if (p.end !== 'entry' || M(p.ids[0]).kind !== 'trigger') return p;
+    const hop = p.ids.findIndex((id, i) => i < p.ids.length - 1 && viaFor(id, p.ids[i + 1]).kinds?.has('dispatch'));
+    if (hop < 0) return p;
+    const trigger = M(p.ids[0]);
+    const handler = M(p.ids[hop + 1]).type;
+    const r = handlerMatch(factsOf(trigger), handler, state.index, state.dispatchMap);
+    return r.ok ? p : { ...p, end: 'dispatch', dispatch: { ...r, handler: handler.display, via: M(p.ids[hop]).label } };
+  });
+  return { ...result, paths };
+}
+
+// custom metadata that trigger dispatchers read handler class names from (e.g. TriggerSettings__mdt)
+async function loadDispatchMap(units) {
+  if (state.mode !== 'org') return;
+  const types = dispatchMetadataTypes(units);
+  if (!types.length) return;
+  const classNames = new Set(units.filter((u) => u.kind === 'class').map((u) => u.name.toLowerCase()));
+  const records = [];
+  for (const t of types) {
+    try {
+      const d = await state.api.request(`/services/data/${state.api.version}/sobjects/${t}/describe/`);
+      const text = d.fields.filter((f) => ['string', 'textarea', 'picklist'].includes(f.type) && f.name !== 'Language').map((f) => f.name);
+      if (!text.length) continue;
+      records.push(...await state.api.query(`SELECT ${[...new Set(['DeveloperName', 'MasterLabel', ...text])].join(', ')} FROM ${t}`));
+    } catch { /* not readable: names are the fallback */ }
+  }
+  const map = buildDispatchMap(records, classNames);
+  if (!map.size) return;
+  state.dispatchMap = map;
+  if (state.appView === 'flow' && (state.field || state.methodId)) rerender();
+}
+
 function renderPaths(paths, rootInfo, truncated) {
   const wrap = h('div', { class: 'paths' });
   const ordered = orderPaths(paths);
   wrap.append(h('div', { class: 'paths-tools' },
-    h('span', {}, `${ordered.length} path${ordered.length === 1 ? '' : 's'}${truncated ? ' (the first 400)' : ''}`),
+    h('span', {}, (() => {
+      const real = ordered.filter((p) => p.end !== 'dispatch').length;
+      const unlikely = ordered.length - real;
+      return `${real} path${real === 1 ? '' : 's'}${unlikely ? ` · ${unlikely} unlikely (trigger framework)` : ''}${truncated ? ' · the first 400' : ''}`;
+    })()),
     h('button', {
       class: 'ghost small path-copy-all', title: 'Copy every path as plain text, ready to paste into Teams, an email or ChatGPT',
       onclick: (e) => copyPaths(e.currentTarget, allPathsText(ordered, rootInfo, truncated), 'Copied all paths'),
     }, h('span', { 'aria-hidden': 'true' }, '⧉'), ' Copy all paths')));
   let group = null;
+  let fold = null; // the rows of the collapsed "only if the framework picked this handler" group
   ordered.forEach((p, n) => {
     if (p.end !== group) {
       group = p.end;
-      wrap.append(h('div', { class: 'group-title' }, `${PATH_GROUPS[group]} · ${ordered.filter((x) => x.end === group).length}`));
+      const count = ordered.filter((x) => x.end === group).length;
+      fold = null;
+      if (group === 'dispatch') {
+        fold = h('div', { class: 'paths-fold', hidden: !state.showDispatch });
+        const btn = h('button', { class: 'link', onclick: () => { state.showDispatch = !state.showDispatch; fold.hidden = !state.showDispatch; btn.textContent = state.showDispatch ? 'Hide' : 'Show them'; } }, state.showDispatch ? 'Hide' : 'Show them');
+        wrap.append(h('div', { class: 'group-title' }, `${PATH_GROUPS[group]} · ${count}`),
+          h('div', { class: 'paths-dispatch-note' },
+            h('span', {}, `These triggers reach this code only through a trigger framework call (like ${p.dispatch.via}) that picks one handler per trigger at run time, and each of them uses a different handler. Each path says why.`),
+            btn),
+          fold);
+      } else {
+        wrap.append(h('div', { class: 'group-title' }, `${PATH_GROUPS[group]} · ${count}`));
+      }
     }
-    const row = h('div', { class: 'path' });
+    const row = h('div', { class: `path${p.usage?.inactive ? ' inactive' : ''}` });
     const first = state.index.methodsById.get(p.ids[0]);
-    row.append(p.end === 'entry' ? entryBadge(first.entry) : h('span', { class: 'entry orphan' }, p.end === 'orphan' ? 'unknown entry' : '…'));
+    if (p.usage) {
+      const u = p.usage;
+      row.append(...[entryBadge(u.entry), h('button', { class: 'step-chip use-chip', 'data-key': `use:${u.key}`, title: u.sub, onclick: () => selectNode(`use:${u.key}`, null, { usage: u }) }, u.name),
+        u.inactive ? h('span', { class: 'badge possible' }, 'inactive') : null].filter(Boolean)); // (append would print a null)
+      if (p.ids.length) row.append(h('span', { class: 'arrow' }, '→'));
+      else if (rootInfo) row.append(...useBadges(u.refs), h('span', { class: 'field-end' }, state.field.name));
+    } else {
+      row.append(p.end === 'entry' || p.end === 'dispatch' ? entryBadge(first.entry) : h('span', { class: 'entry orphan' }, p.end === 'orphan' ? 'unknown entry' : '…'));
+    }
     p.ids.forEach((id, i) => {
       const m = state.index.methodsById.get(id);
       const last = i === p.ids.length - 1;
@@ -848,15 +1263,16 @@ function renderPaths(paths, rootInfo, truncated) {
       row.append(h('button', { class: 'step-chip', 'data-key': key, onclick: () => selectNode(key, id, info) }, m.label));
       if (!last || rootInfo) row.append(h('span', { class: 'arrow' }, '→'));
     });
-    if (rootInfo) {
+    if (rootInfo && p.ids.length) {
       const r = rootInfo.get(p.ids[p.ids.length - 1]);
       row.append(...accessBadges(r.refs), h('span', { class: 'field-end' }, state.field.name));
     }
+    if (p.dispatch) row.append(h('span', { class: 'path-why', title: p.dispatch.detail }, p.dispatch.detail));
     row.append(h('button', {
       class: 'path-copy', title: 'Copy this path as plain text', 'aria-label': `Copy path ${n + 1}`,
       onclick: (e) => copyPaths(e.currentTarget, [pathsHeading(1), '', ...pathText(p, n, ordered.length, rootInfo), '', COPY_FOOTER].join('\n'), 'Copied'),
     }, '⧉'));
-    wrap.append(row);
+    (fold || wrap).append(row);
   });
   if (truncated) wrap.append(h('p', { class: 'paths-note' }, 'Showing the first 400 paths. Use the call tree to explore the rest.'));
   return wrap;
@@ -868,14 +1284,18 @@ const PATH_GROUPS = {
   entry: 'From an entry point',
   orphan: 'No Apex caller found (Flow, Visualforce, anonymous Apex or managed code?)',
   depth: 'Stopped at max depth',
+  dispatch: 'Only if the trigger framework picked this handler',
 };
 const COPY_FOOTER = '(Copied from Salesforce OG Debugger · Code Flow)';
 
 // the order they're shown in: entry paths first, by entry kind, then name, then length
 function orderPaths(paths) {
   const M = (p) => state.index.methodsById.get(p.ids[0]);
+  // straight from a Flow / component to the field first, then Apex paths (with the component that starts them)
+  const rank = (p) => (p.usage && !p.ids.length ? -2 : p.usage ? -1 : entryRank(M(p)));
+  const name = (p) => (p.ids.length ? M(p).label : '') + (p.usage ? ` ${p.usage.name}` : '');
   return Object.keys(PATH_GROUPS).flatMap((end) => paths.filter((p) => p.end === end)
-    .sort((a, b) => entryRank(M(a)) - entryRank(M(b)) || M(a).label.localeCompare(M(b).label) || a.ids.length - b.ids.length));
+    .sort((a, b) => rank(a) - rank(b) || name(a).localeCompare(name(b)) || a.ids.length - b.ids.length));
 }
 
 // "AccountService.normalizeIndustry(List<Account> accounts)"
@@ -895,21 +1315,22 @@ function pathsHeading(count) {
     ? `Who calls ${signatureOf(state.index.methodsById.get(state.methodId))}`
     : `How Apex reaches ${state.object}.${state.field?.name}`;
   const org = state.mode === 'demo' ? 'demo org' : state.session?.apiHost;
-  return `${target}\n${count === 1 ? 'One Apex code path' : `${count} Apex code paths`}, from the entry point down${org ? ` · ${org}` : ''}`;
+  return `${target}\n${count === 1 ? 'One code path' : `${count} code paths`}, from the entry point down${org ? ` · ${org}` : ''}`;
 }
 
 // one path: numbered steps, where each step calls the next, and what the last step does
 function pathText(p, n, total, rootInfo) {
+  if (p.usage) return usagePathText(p, n, total, rootInfo);
   const first = state.index.methodsById.get(p.ids[0]);
   const e = first.entry;
-  const start = p.end === 'entry' ? `${e?.label || 'Entry point'}${e?.detail && e.detail !== e.label ? ` (${e.detail})` : ''}`
+  const start = p.end === 'entry' || p.end === 'dispatch' ? `${e?.label || 'Entry point'}${e?.detail && e.detail !== e.label ? ` (${e.detail})` : ''}${p.dispatch ? ` · unlikely: ${p.dispatch.detail}` : ''}`
     : p.end === 'orphan' ? 'No Apex caller found: may run from a Flow, Visualforce page, anonymous Apex or a managed package'
       : 'Stopped at max depth: there are more callers above this';
   const out = [`Path ${n + 1}${total > 1 ? ` of ${total}` : ''} · ${start}`];
   p.ids.forEach((id, i) => {
     const m = state.index.methodsById.get(id);
     const last = i === p.ids.length - 1;
-    const tag = i === 0 && p.end === 'entry' && e ? `  [${e.label}]` : '';
+    const tag = i === 0 && (p.end === 'entry' || p.end === 'dispatch') && e ? `  [${e.label}]` : '';
     out.push(`  ${i + 1}. ${signatureOf(m)}${tag}`);
     out.push(`       ${whereOf(m)}`);
     if (!last) {
@@ -932,7 +1353,9 @@ function pathText(p, n, total, rootInfo) {
   return out;
 }
 
-function allPathsText(ordered, rootInfo, truncated) {
+function allPathsText(all, rootInfo, truncated) {
+  const ordered = all.filter((p) => p.end !== 'dispatch');
+  const unlikely = all.filter((p) => p.end === 'dispatch');
   const lines = [pathsHeading(ordered.length)];
   let group = null;
   ordered.forEach((p, n) => {
@@ -942,6 +1365,13 @@ function allPathsText(ordered, rootInfo, truncated) {
     }
     lines.push('', ...pathText(p, n, ordered.length, rootInfo));
   });
+  if (unlikely.length) {
+    const d = unlikely[0].dispatch;
+    const names = [...new Set(unlikely.map((p) => state.index.methodsById.get(p.ids[0]).label))];
+    lines.push('', `=== Not counted (${unlikely.length}): only if the trigger framework picked ${d.handler} ===`,
+      `These triggers reach it only through ${d.via}, which picks the handler at run time; they use other handlers:`,
+      `  ${names.join(', ')}`);
+  }
   if (truncated) lines.push('', 'Only the first 400 paths are listed.');
   lines.push('', COPY_FOOTER);
   return lines.join('\n');
@@ -1035,12 +1465,13 @@ function refsList(items, onPick) {
 }
 
 // the source rows for a line range; in the whole class, the selected method's lines are marked
-function sourcePre(lines, range, marks, method) {
+function sourcePre(lines, range, marks, method, file) {
+  const links = file && state.index ? linksFor(file) : null;
   const pre = h('pre', { class: 'src' });
   let inBlock = false;
   for (let n = 1; n < range[0]; n++) inBlock = highlight(lines[n - 1] ?? '', inBlock).inBlock;
   for (let n = range[0]; n <= range[1]; n++) {
-    const { html, inBlock: ib } = highlight(lines[n - 1] ?? '', inBlock, marks.hlCols.get(n));
+    const { html, inBlock: ib } = highlight(lines[n - 1] ?? '', inBlock, marks.hlCols.get(n), links?.byLine.get(n));
     inBlock = ib;
     const txt = h('span', { class: 'txt' });
     txt.innerHTML = html || ' ';
@@ -1048,6 +1479,7 @@ function sourcePre(lines, range, marks, method) {
     pre.append(h('div', { class: `row${marks.hlLines.has(n) ? ' ' + marks.hlClass : ''}${inMethod ? ' in-method' : ''}`, 'data-line': n },
       h('span', { class: 'gutter' }, n), txt));
   }
+  if (links) wireLinks(pre, links, codeLinkHandlers());
   return pre;
 }
 
@@ -1089,6 +1521,7 @@ async function copyCode(btn, text) {
 }
 
 function showCode(id, info) {
+  if (info?.usage) { showUsage(info.usage); return; }
   state.codeShown = { id, info };
   const m = state.index.methodsById.get(id);
   const marks = codeMarks(m, info);
@@ -1107,7 +1540,7 @@ function showCode(id, info) {
       copyButton(sc),
       url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null),
     marks.items.length ? codeDetails(refsList(marks.items, scrollToLine), codeSummary(info, marks.items.length)) : null);
-  const scroller = h('div', { class: 'code-scroll' }, sourcePre(sc.lines, sc.range, marks, sc.whole ? sc.method : null));
+  const scroller = h('div', { class: 'code-scroll' }, sourcePre(sc.lines, sc.range, marks, sc.whole ? sc.method : null, m.file));
   $('#code').replaceChildren(head, scroller);
   const first = Math.min(...marks.hlLines);
   scrollToLine(Number.isFinite(first) ? first : sc.method[0]);
@@ -1136,7 +1569,7 @@ function openCodeFocus(id, info) {
       sc.canWhole ? h('button', { class: 'link', onclick: () => { state.codeWhole = !state.codeWhole; drawSource(); if (state.codeShown) showCode(state.codeShown.id, state.codeShown.info); } }, sc.whole ? 'Method only' : 'Whole class') : null,
       copyButton(sc),
       url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null].filter(Boolean));
-    scroller = h('div', { class: 'code-scroll fx-src' }, sourcePre(sc.lines, sc.range, marks, sc.whole ? sc.method : null));
+    scroller = h('div', { class: 'code-scroll fx-src' }, sourcePre(sc.lines, sc.range, marks, sc.whole ? sc.method : null, m.file));
     srcBody.replaceChildren(scroller);
     const first = Math.min(...marks.hlLines);
     requestAnimationFrame(() => scroller.querySelector(`.row[data-line="${Number.isFinite(first) ? first : sc.method[0]}"]`)?.scrollIntoView({ block: 'center' }));

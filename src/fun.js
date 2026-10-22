@@ -135,6 +135,11 @@ const RULES = [
   { sel: '.dx-modal-card h2', where: 'start', emoji: (el) => (/delete/i.test(textOf(el)) ? '😱' : null), anim: 'wobble' },
   { sel: '.dx-run', where: 'end', emoji: () => '🚀', anim: 'hover' },
 
+  // ---- OG Explorer: following the trail ----
+  { sel: '.cx-crumb-sep', where: 'start', emoji: () => '👣' },
+  { sel: '.cx-empty-title', where: 'start', emoji: () => '🗺️', anim: 'float' },
+  { sel: '.cl-peek-head b', where: 'start', emoji: () => '👀 ' },
+
   // ---- Data Import: moving in ----
   { sel: '.di-drop-title', where: 'start', emoji: () => '📦', anim: 'float' },
   { sel: '.di-run:not(:disabled)', where: 'end', emoji: (el) => (el.classList.contains('danger') ? '🧨' : /undelete/i.test(textOf(el)) ? '🧟' : '🚚'), anim: 'hover' },

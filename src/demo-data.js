@@ -320,3 +320,55 @@ export const DEMO_FIELDS = {
     f('AccountId', 'Account ID', 'reference'), f('Account_Industry__c', 'Account Industry', 'string'),
   ],
 };
+
+// A second sample (app.html?demo=framework): a metadata-driven trigger framework, where every trigger calls
+// one dispatcher that picks the handler class at run time. Used to check Code Flow keeps only real paths.
+export const DEMO_FRAMEWORK_UNITS = [
+  cls('01p000000000101', 'FW_ITriggerHandler', `
+public interface FW_ITriggerHandler {
+    void afterUpdate(Map<Id, SObject> newMap, Map<Id, SObject> oldMap);
+}`),
+  cls('01p000000000102', 'FW_TriggerDispatcher', `
+public class FW_TriggerDispatcher {
+    public static void run(String settingName) {
+        Trigger_Setting__mdt setting = Trigger_Setting__mdt.getInstance(settingName);
+        FW_ITriggerHandler handler = (FW_ITriggerHandler) Type.forName(setting.Handler_Class__c).newInstance();
+        execute(handler);
+    }
+    private static void execute(FW_ITriggerHandler handler) {
+        if (Trigger.isAfter && Trigger.isUpdate) {
+            handler.afterUpdate(Trigger.newMap, Trigger.oldMap);
+        }
+    }
+}`),
+  cls('01p000000000103', 'ddmTriggerHandler', `
+public class ddmTriggerHandler implements FW_ITriggerHandler {
+    public void afterUpdate(Map<Id, SObject> newMap, Map<Id, SObject> oldMap) {
+        ddmOrderService.generateOrderOnReplacement(newMap.keySet());
+    }
+}`),
+  cls('01p000000000104', 'CaseTriggerHandler', `
+public class CaseTriggerHandler implements FW_ITriggerHandler {
+    public void afterUpdate(Map<Id, SObject> newMap, Map<Id, SObject> oldMap) {
+        System.debug('cases updated');
+    }
+}`),
+  cls('01p000000000105', 'ddmOrderService', `
+public class ddmOrderService {
+    public static void generateOrderOnReplacement(Set<Id> requestIds) {
+        System.debug('creating replacement orders for ' + requestIds.size() + ' requests');
+    }
+}`),
+  trg('01q000000000101', 'ddmTrigger', `
+trigger ddmTrigger on DDM_Request__c (before insert, before update, after update) {
+    FW_TriggerDispatcher.run('DDM');
+}`),
+  trg('01q000000000102', 'CaseTrigger', `
+trigger CaseTrigger on Case (before insert, before update, after update) {
+    FW_TriggerDispatcher.run('Case');
+}`),
+  trg('01q000000000103', 'AssetTrigger', `
+trigger AssetTrigger on Asset (before insert, before update, after update) {
+    FW_TriggerDispatcher.run('Asset');
+}`),
+];

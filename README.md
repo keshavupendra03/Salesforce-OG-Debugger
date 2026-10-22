@@ -55,14 +55,36 @@ Call graph: static calls, instance calls through typed variables, `this`/`super`
 "Possible" matches (unknown receiver type, `SObject`, name-only call matches) are hidden by default
 and shown with dashed borders when enabled.
 
+**Trigger frameworks:** a trigger that reaches a handler through an interface / virtual call (one dispatcher
+for every trigger) only counts for the handler it really uses: the one it creates (`new XHandler()`), the one
+its custom metadata names (`TriggerSettings__mdt`-style records read after the scan, when the dispatcher uses
+`Type.forName`), or failing those, the one its name matches. The others fold into "Only if the trigger
+framework picked this handler" in both the call tree and the entry paths (`src/apex/dispatch.js`).
+
+### Outside Apex
+
+Both tabs also list what isn't Apex, read from the same (cached) sources FBI Search uses:
+
+| Where | Field mode | Method mode |
+|---|---|---|
+| Flows and Process Builder | the elements that read or write it (`$Record`, record variables, Get Records, loops, Update / Create Records) | Apex actions running its `@InvocableMethod` |
+| Validation rules | formulas that use it (same object, or through a lookup) | |
+| Formula fields | formulas on the object that use it | |
+| LWC | `@salesforce/schema/Object.Field`, `Object.Field`, field names next to the object | `import … from '@salesforce/apex/Class.method'` |
+| Aura | as LWC | `controller="Class"` + `c.method` |
+| Visualforce | `{!Object.Field}`, inputs | `controller` / `extensions` + `{!method}`, `{!property}`, remoting |
+
+They show as dashed cards in the call tree (with what they do, the source lines, and a link to Flow Builder /
+Setup) and as the start of entry paths: an LWC that calls an `@AuraEnabled` method becomes the entry point
+("LWC closeOpportunity → OpportunityService.closeStale()"). `src/usage/usage.js`.
+
 ### Known gaps (by design for an MVP)
 
 - Managed-package code is excluded (`NamespacePrefix = null`), since its bodies are hidden anyway.
 - No full type inference: method return types, generic `Object`, and fields of wrapper classes
   fall back to "possible".
-- Calls through a base class are context-insensitive: if several triggers call `TriggerHandler.run()`,
-  each override shows all of them as callers.
-- Only Apex. Flows, LWC, Visualforce, formulas, validation rules and workflow are not scanned yet.
+- Outside Apex: workflow field updates, cross-object formulas on other objects, page layouts and reports are not
+  scanned; component matches by field name are marked "possible".
 - Very large orgs (tens of MB of Apex) parse on the main thread. Move parsing to a Web Worker before scaling.
 
 ## Debug Logs
@@ -243,6 +265,44 @@ Browsers don't let extensions set `Cookie`, `Host` or `Origin`; those headers ar
 src/informant/core.js         cURL import/export, snippets, variables, URL <-> params, Postman v2.1 (pure, tested)
 src/informant/informant-ui.js the view, plus the demo server used in demo mode
 src/informant/orgs.js         org families from My Domain hosts, the org/token registry (cookies), demo orgs
+```
+
+## OG Explorer
+
+**OG Explorer** in the top bar (demo: `app.html?demo=1&view=explorer`) reads your org's code like an IDE (read-only):
+
+- **Everything:** Apex classes and triggers, LWC, Aura, Visualforce pages and components, with Recent and a filter.
+  **Ctrl+P** goes to anything: classes, components and `Class.method` (words in any order: `ddmhigh gen`).
+- **Click a call to jump to it:** method calls, `new Foo()`, class names, `extends` / `implements`; an LWC's
+  `@salesforce/apex/Class.method` import, `<c-child>` / `import 'c/child'`; Aura and Visualforce `controller` /
+  `extensions`, `c.method`, `{!method}`. A call through an interface or virtual method asks which implementation.
+  **Hover** for the signature and the first lines, **Alt+click to peek** (the method opens under the line, peeks
+  can nest), **Ctrl+click** for a new tab. Calls matched by name only are marked.
+- **Back / Forward** (Alt+← / Alt+→, mouse buttons) retrace every jump; the breadcrumb shows file › method.
+  Tabs from the sidebar or Ctrl+P are previews (reused, italic: double-click to keep); a file you jump from stays.
+- **Outline:** the file's methods, and **Called by / Calls** for the method you're in. Ctrl+F finds in the file,
+  Ctrl+G goes to a line. Copy method / class, Setup ↗, the method's call tree in Code Flow, Run in OG Executor.
+- **Like VS Code:** select text and every other occurrence in the file lights up (with a count; Apex ignores case).
+  Fold methods, `if` / `for` / `try` blocks and multi-line tags from the arrow by the line number (⊟ / ⊞ fold or
+  unfold everything); jumping into folded code opens it.
+- **Code look** (top right of the editor): **OG**, **Developer Console** (white, Salesforce's colours and gutter) or
+  **VS Code** (dark: bracket-pair colours, indent guides, its token colours). Only the editor changes; links, peeks,
+  tabs, back / forward and the outline work the same in every look. LWC, Aura and Visualforce files are coloured too.
+- **Sticky scroll** (like VS Code, on by default, switch it off in the same menu): the class, method and blocks
+  you're scrolled into stay pinned at the top; each slides away as its block ends. Click a pinned line to go to it.
+- **Layout:** both side panes resize (drag the edge, double-click to reset) and collapse to a slim rail (the file
+  list also with Ctrl+B). The sidebar starts with every section folded so you can see what there is to explore.
+- The **code panels in Code Flow and Debug Logs** have the same links: hover and Alt+click peek in place, a click
+  continues in OG Explorer.
+- No extra downloads: Apex from the Code Flow scan, components from the (cached) FBI Search sources. Built for
+  editing later: documents carry their Tooling record and LastModifiedDate (`src/explorer/doc-store.js`).
+
+```
+src/explorer/code-links.js   which names are links, hover / click / peek (shared with Code Flow and Debug Logs)
+src/explorer/code-tools.js   folding, selection highlights, indent guides, sticky scroll
+src/explorer/syntax.js       colours for LWC / Aura JavaScript, CSS and markup
+src/explorer/doc-store.js    the documents (and where a future save would write)
+src/explorer/explorer-ui.js  the view
 ```
 
 ## The OG Executor (run Batch, Queueable, Schedulable and Anonymous Apex)

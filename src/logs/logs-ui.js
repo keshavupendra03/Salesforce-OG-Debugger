@@ -217,14 +217,21 @@ let waitCache = null; // keeps the preloaded frames alive so swapping src never 
  * items: [{ label, sub, total }] where total is the expected size in bytes (may be 0/unknown).
  */
 function loadingView(items) {
-  if (!waitCache) waitCache = WAIT_FRAMES.map((src) => Object.assign(new Image(), { src }));
-  const img = h('img', { class: 'ld-frame', src: WAIT_FRAMES[0], alt: '' });
+  // the waiting images are a Fun mode thing: without it, a plain spinner (and no image is even fetched)
+  const fun = () => document.documentElement.classList.contains('fun');
+  const img = h('img', { class: 'ld-frame', alt: '' });
   const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  let f = 0;
-  const timer = still ? null : setInterval(() => {
-    if (!img.isConnected) { clearInterval(timer); return; }
-    f = (f + 1) % WAIT_FRAMES.length;
+  let f = -1;
+  const show = () => {
+    if (!fun()) return;
+    if (!waitCache) waitCache = WAIT_FRAMES.map((src) => Object.assign(new Image(), { src }));
+    if (f < 0 || !still) f = (f + 1) % WAIT_FRAMES.length;
     img.src = WAIT_FRAMES[f];
+  };
+  show();
+  const timer = setInterval(() => {
+    if (!img.isConnected) { clearInterval(timer); return; }
+    if (f < 0 || !still) show(); // also picks up Fun mode turned on mid-download
   }, WAIT_MS);
 
   const bar = () => {
@@ -251,7 +258,7 @@ function loadingView(items) {
     return { ...it, got: 0, done: false, b, box, size };
   });
   const root = h('div', { class: 'ld-wrap', 'aria-live': 'polite' },
-    h('div', { class: 'ld-stage' }, img),
+    h('div', { class: 'ld-stage' }, img, h('span', { class: 'lg-spinner ld-spin', 'aria-hidden': 'true' })),
     title,
     overall ? overall.box : null,
     h('ul', { class: 'ld-rows' }, rows.map((r) => r.box)));
@@ -1847,6 +1854,7 @@ export function mountLogs(root, backend, sources = {}) {
   function sourceModel(o) {
     const { unit, frame, focus, focusLine, marks, err } = o;
     const lines = unit.body.split('\n');
+    const links = sources.codeLinks?.(unit) || null; // clickable calls (OG Explorer links)
     let range = [1, lines.length];
     const canNarrow = frame.kind === 'method' && unit.kind === 'class';
     if (canNarrow && !o.whole) {
@@ -1869,7 +1877,7 @@ export function mountLogs(root, backend, sources = {}) {
     }
     if (focusLine && !rowCls.has(focusLine)) rowCls.set(focusLine, focus?.kind === 'error' ? 'hl-err' : 'hl-call');
     return {
-      lines, range, canNarrow, rowCls, refs,
+      lines, range, canNarrow, rowCls, refs, links,
       ext: unit.kind === 'trigger' ? 'trigger' : unit.kind === 'anon' ? 'apex' : 'cls',
       url: unit.id ? sources.setupUrl?.(unit) : null,
       entry: entryOf(frame),
@@ -1893,7 +1901,7 @@ export function mountLogs(root, backend, sources = {}) {
     let inBlock = false;
     for (let n = 1; n < m.range[0]; n++) inBlock = highlight(m.lines[n - 1], inBlock).inBlock;
     for (let n = m.range[0]; n <= m.range[1]; n++) {
-      const r = highlight(m.lines[n - 1] ?? '', inBlock);
+      const r = highlight(m.lines[n - 1] ?? '', inBlock, null, m.links?.byLine.get(n));
       inBlock = r.inBlock;
       const txt = h('span', { class: 'txt' });
       txt.innerHTML = r.html || ' ';
@@ -1901,6 +1909,7 @@ export function mountLogs(root, backend, sources = {}) {
       pre.append(h('div', { class: `row${cls ? ' ' + cls : ''}${n === focusLine ? ' hl-focus' : ''}`, 'data-line': n },
         h('span', { class: 'gutter' }, n), txt));
     }
+    m.links?.wire(pre);
     return pre;
   }
 

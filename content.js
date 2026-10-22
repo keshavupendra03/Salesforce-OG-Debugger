@@ -46,7 +46,19 @@
     transition: transform .22s cubic-bezier(.2, .9, .3, 1), opacity .18s ease, visibility 0s linear .22s;
   }
   .panel.open { transform: none; opacity: 1; visibility: visible; transition: transform .24s cubic-bezier(.2, .9, .3, 1), opacity .18s ease; }
-  .panel iframe { width: 100%; height: 100%; border: 0; display: block; color-scheme: normal; }
+  .panel iframe { position: relative; z-index: 1; width: 100%; height: 100%; border: 0; display: block; color-scheme: normal; opacity: 0; transition: opacity .15s; }
+  .panel iframe.ready { opacity: 1; }
+  .busy, .note { position: absolute; inset: 0; display: grid; place-items: center; align-content: center; gap: 12px; padding: 28px; text-align: center;
+    font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: #475569; }
+  .busy i { width: 26px; height: 26px; border-radius: 50%; border: 3px solid #e2e8f0; border-top-color: #2563eb; animation: og-spin .7s linear infinite; }
+  @keyframes og-spin { to { transform: rotate(360deg); } }
+  .note { z-index: 2; background: inherit; }
+  .note b { font-size: 14.5px; color: #0f172a; }
+  .note p { margin: 0; max-width: 280px; }
+  .note .row { display: flex; gap: 8px; justify-content: center; }
+  .note button { padding: 7px 14px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; color: #0f172a; font: 600 12.5px ui-sans-serif, system-ui, "Segoe UI", sans-serif; cursor: pointer; }
+  .note button.primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+  @media (prefers-color-scheme: dark) { .busy, .note { color: #94a3b8; } .note b { color: #e2e8f0; } .note button { background: #1e293b; color: #e2e8f0; border-color: #334155; } }
   @media (prefers-color-scheme: dark) { .panel { background: #151a21; } }
   @media (prefers-reduced-motion: reduce) { .handle, .panel, .tip, .handle svg { transition: none !important; } }
 </style>
@@ -75,21 +87,69 @@
   window.addEventListener('resize', () => placeHandle(frac));
 
   const post = (msg) => frame?.contentWindow?.postMessage({ source: 'og-page', ...msg }, EXT_ORIGIN);
+  // false once the extension was reloaded or updated after this page loaded (Chrome cuts old content scripts off)
+  const alive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
+
+  // ---------- the panel frame, and getting it back when Chrome took it away ----------
+  // Reloading or updating the extension (or Chrome reclaiming memory on an idle tab) can leave the
+  // frame empty: a blank white panel. So the frame says "ready" when it starts and answers a ping;
+  // a frame that stays quiet is replaced with a fresh one.
+  let frameReady = false;
+  let pingT = 0;
+  let loadT = 0;
+  const busy = document.createElement('div');
+  busy.className = 'busy';
+  busy.innerHTML = '<i></i><span>Loading OG Debugger…</span>';
+  panel.append(busy);
+
+  function newFrame() {
+    frame?.remove();
+    clearNote();
+    frameReady = false;
+    frame = document.createElement('iframe');
+    frame.title = 'OG Debugger';
+    frame.allow = 'clipboard-write';
+    // built from the extension's origin, not chrome.runtime: works even after the extension reloaded
+    frame.src = `${EXT_ORIGIN}/panel.html?${new URLSearchParams({ host: location.hostname, url: location.href })}`;
+    panel.append(frame);
+    clearTimeout(loadT);
+    loadT = setTimeout(() => { if (!frameReady) showNote(); }, 12000);
+  }
+
+  function checkFrame() {
+    if (!frame) { newFrame(); return; }
+    if (!frameReady) return; // still loading: the load timer watches it
+    clearTimeout(pingT);
+    const sent = Date.now();
+    frame.dataset.ping = String(sent);
+    post({ type: 'ping', at: sent });
+    pingT = setTimeout(() => { if (frame?.dataset.ping === String(sent)) newFrame(); }, 1500);
+  }
+
+  function clearNote() { panel.querySelector('.note')?.remove(); }
+  function showNote() {
+    clearNote();
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.innerHTML = alive()
+      ? '<b>The panel didn’t load</b><p>Chrome may have paused it while this tab sat idle. Try again, or reload the page.</p><div class="row"><button class="primary" data-a="retry">Try again</button><button data-a="reload">Reload page</button></div>'
+      : '<b>OG Debugger was updated</b><p>It was reloaded or updated after this page opened. Reload the page to reconnect it.</p><div class="row"><button class="primary" data-a="reload">Reload page</button><button data-a="retry">Try again</button></div>';
+    note.addEventListener('click', (e) => {
+      const a = e.target.closest('button')?.dataset.a;
+      if (a === 'reload') location.reload();
+      if (a === 'retry') newFrame();
+    });
+    panel.append(note);
+  }
 
   function toggle(force) {
     open = force ?? !open;
-    if (open && !frame) {
-      frame = document.createElement('iframe');
-      frame.title = 'OG Debugger';
-      frame.allow = 'clipboard-write';
-      frame.src = `${chrome.runtime.getURL('panel.html')}?${new URLSearchParams({ host: location.hostname, url: location.href })}`;
-      panel.append(frame);
-    }
+    if (open) checkFrame();
     panel.classList.toggle('open', open);
     handle.classList.toggle('open', open);
     handle.setAttribute('aria-expanded', String(open));
     handle.setAttribute('aria-label', open ? 'Close OG Debugger' : 'Open OG Debugger');
-    if (open) { post({ type: 'url', url: location.href, apiNames: API.on }); post({ type: 'opened' }); frame.focus(); } else handle.focus({ preventScroll: true });
+    if (open) { post({ type: 'url', url: location.href, apiNames: API.on }); post({ type: 'opened' }); frame?.focus(); } else handle.focus({ preventScroll: true });
   }
 
   // click toggles; a drag moves the handle up or down the edge
@@ -236,6 +296,15 @@
   // messages from the panel: close, go somewhere in this tab (Login as), field API names
   window.addEventListener('message', (e) => {
     if (e.origin !== EXT_ORIGIN || e.data?.source !== 'og-panel') return;
+    if (e.source !== frame?.contentWindow) return; // a replaced frame's last words don't count
+    if (e.data.type === 'ready') {
+      frameReady = true;
+      clearTimeout(loadT);
+      frame.classList.add('ready');
+      clearNote();
+      if (open) { post({ type: 'url', url: location.href, apiNames: API.on }); post({ type: 'opened' }); }
+    }
+    if (e.data.type === 'pong' && frame?.dataset.ping === String(e.data.at)) { delete frame.dataset.ping; clearTimeout(pingT); }
     if (e.data.type === 'close') toggle(false);
     if (e.data.type === 'navigate' && /^https:\/\/[\w.-]+\.(salesforce|force|salesforce-setup)\.com\//.test(e.data.url)) location.href = e.data.url;
     if (e.data.type === 'api-names') setApiNames(!!e.data.on, e.data.fields, e.data.object);
@@ -246,6 +315,10 @@
   // ---------- Empty cache & hard reload: the background empties this org's cache, then reloads the tab ----------
   const FRESH_KEY = 'og-debugger-fresh';
   function hardReload(deep) {
+    if (!alive()) {
+      post({ type: 'hard-reload-failed', error: 'OG Debugger was updated since this page opened. Reload the page once (F5), then try again.' });
+      return;
+    }
     try { sessionStorage.setItem(FRESH_KEY, JSON.stringify({ at: Date.now(), deep })); } catch { /* blocked */ }
     chrome.runtime.sendMessage({ type: 'og-hard-reload', deep }, (res) => {
       // on success the page is already reloading; only a failure comes back here

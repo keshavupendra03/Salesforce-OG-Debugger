@@ -34,6 +34,7 @@ const tellPage = (msg) => window.parent?.postMessage({ source: 'og-panel', ...ms
 window.addEventListener('message', (e) => {
   if (!DEMO && e.origin !== parentOrigin) return;
   if (e.data?.source !== 'og-page') return;
+  if (e.data.type === 'ping') { tellPage({ type: 'pong', at: e.data.at }); return; }
   if (e.data.type === 'url') {
     const was = S.apiNames;
     S.apiNames = !!e.data.apiNames;
@@ -92,6 +93,7 @@ const soqlStr = (s) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 const el = {};
 async function start() {
   render();
+  tellPage({ type: 'ready' }); // the page shows this frame now (until then: a spinner, never a blank box)
   try {
     if (DEMO) {
       S.records = new DemoRecordBackend();
@@ -499,6 +501,7 @@ function renderTools() {
       tool('import', '📥', 'Data Import', 'Paste from Excel, CSV or JSON: insert, update, upsert, delete, undelete'),
       tool('search', '🔎', 'FBI Search', 'Full-Base Inspector: got an error on this page? Find which Apex, flow or rule says it'),
       tool('api', '🕴️', 'The Informant', 'API client: collections, environments, cURL import, your Salesforce session'),
+      tool('explorer', '🗂', 'OG Explorer', 'Read classes, triggers, LWC, Aura and Visualforce; click a call to jump to it'),
       tool('exec', '😎', 'The OG Executor', 'Run Batch, Queueable and Schedulable Apex or any Anonymous Apex, and watch the jobs')));
 }
 

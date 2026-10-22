@@ -4,6 +4,7 @@
 
 import { DEMO_UNITS } from '../demo-data.js';
 import { linesOf, flowLines, flowKind, flowTypeLabel, validationLines } from './search-engine.js';
+import { flowRefs } from '../usage/usage.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const UI = 'https://demo.example.lightning.force.com';
@@ -39,8 +40,10 @@ const FLOWS = [
     id: '301000000000004', name: 'Opportunity_Stage_Update', processType: 'Workflow', active: true, version: 2,
     md: {
       label: 'Opportunity Stage Update (Process Builder)', description: 'Old process: stamps the close date and posts to Chatter.',
+      processMetadataValues: [{ name: 'ObjectType', value: { stringValue: 'Opportunity' } }],
+      variables: [{ name: 'myVariable_current', dataType: 'SObject', objectType: 'Opportunity' }, { name: 'myVariable_old', dataType: 'SObject', objectType: 'Opportunity' }],
       decisions: [{ name: 'myDecision', label: 'Stage is Closed Won', rules: [{ name: 'myRule_1', label: 'Closed Won', conditions: [{ leftValueReference: 'myVariable_current.StageName', operator: 'EqualTo', rightValue: { stringValue: 'Closed Won' } }] }] }],
-      recordUpdates: [{ name: 'myRule_1_A1', label: 'Stamp close date', inputAssignments: [{ field: 'CloseDate', value: { elementReference: '$Flow.CurrentDate' } }] }],
+      recordUpdates: [{ name: 'myRule_1_A1', label: 'Stamp close date', inputReference: 'myVariable_current', inputAssignments: [{ field: 'CloseDate', value: { elementReference: '$Flow.CurrentDate' } }] }],
       actionCalls: [{ name: 'myRule_1_A2', label: 'Post to Chatter', actionName: 'chatterPost', inputParameters: [{ name: 'text', value: { stringValue: 'Deal won! {!myVariable_current.Name} is closed.' } }] }],
     },
   },
@@ -133,7 +136,7 @@ export class DemoSearchSources {
     return FLOWS.map((f) => ({
       kind: flowKind(f.processType), id: f.id, name: f.name, title: f.md.label, inactive: !f.active,
       sub: `${flowTypeLabel(f.processType, f.md.start?.triggerType)}${f.md.start?.object ? ` · ${f.md.start.object}` : ''} · v${f.version}${f.active ? '' : ' · inactive'}`,
-      lines: flowLines(f.md),
+      lines: flowLines(f.md), refs: flowRefs(f.md), object: f.md.start?.object || null,
       link: flowKind(f.processType) === 'process' ? `${UI}/lightning/setup/ProcessAutomation/home` : `${UI}/builder_platform_interaction/flowBuilder.app?flowId=${f.id}`,
     }));
   }
@@ -141,7 +144,7 @@ export class DemoSearchSources {
   validation() {
     return RULES.map((r) => ({
       kind: 'validation', id: r.Id, name: r.ValidationName, sub: `${r.object}${r.Active ? '' : ' · inactive'}`, inactive: !r.Active,
-      lines: validationLines(r), link: `${UI}/lightning/setup/ObjectManager/${r.object}/ValidationRules/${r.Id}/view`,
+      lines: validationLines(r), formula: r.formula, object: r.object, link: `${UI}/lightning/setup/ObjectManager/${r.object}/ValidationRules/${r.Id}/view`,
     }));
   }
 

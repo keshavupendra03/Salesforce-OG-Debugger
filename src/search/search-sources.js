@@ -4,6 +4,7 @@
 
 import { linesOf, flowLines, flowKind, flowTypeLabel, validationLines } from './search-engine.js';
 import { lightningHost } from '../record/sf-urls.js';
+import { flowRefs } from '../usage/usage.js';
 
 // ---------- tiny IndexedDB key/value cache ----------
 const DB = 'og-search';
@@ -103,18 +104,18 @@ export class SfSearchSources {
     // the version that runs (active), or the newest one when nothing is active
     const wanted = defs.filter((d) => !d.NamespacePrefix && (d.ActiveVersionId || d.LatestVersionId))
       .map((d) => ({ def: d, id: d.ActiveVersionId || d.LatestVersionId, active: !!d.ActiveVersionId }));
-    const cached = await getMany(wanted.map((w) => this.key(`flow:${w.id}`)));
+    const cached = await getMany(wanted.map((w) => this.key(`flow2:${w.id}`)));
     const fresh = [];
     let done = 0;
-    await pool(wanted.filter((w) => !cached.has(this.key(`flow:${w.id}`))), 6, async (w) => {
+    await pool(wanted.filter((w) => !cached.has(this.key(`flow2:${w.id}`))), 6, async (w) => {
       try {
         const [f] = await this.tq(`SELECT Id, MasterLabel, ProcessType, Status, VersionNumber, Metadata FROM Flow WHERE Id = '${w.id}'`);
         if (f) {
           const md = f.Metadata || {};
           const v = { label: f.MasterLabel, processType: f.ProcessType, triggerType: md.start?.triggerType || null, object: md.start?.object || null,
-            status: f.Status, version: f.VersionNumber, lines: flowLines(md) };
-          cached.set(this.key(`flow:${w.id}`), v);
-          fresh.push([this.key(`flow:${w.id}`), v]);
+            status: f.Status, version: f.VersionNumber, lines: flowLines(md), refs: flowRefs(md) };
+          cached.set(this.key(`flow2:${w.id}`), v);
+          fresh.push([this.key(`flow2:${w.id}`), v]);
         }
       } catch { /* a flow we can't read: skip it */ }
       done++;
@@ -122,12 +123,12 @@ export class SfSearchSources {
     });
     await putMany(fresh);
     return wanted.map((w) => {
-      const v = cached.get(this.key(`flow:${w.id}`));
+      const v = cached.get(this.key(`flow2:${w.id}`));
       if (!v) return null;
       const kind = flowKind(v.processType);
       return {
         kind, id: w.id, name: w.def.DeveloperName, sub: `${flowTypeLabel(v.processType, v.triggerType)}${v.object ? ` · ${v.object}` : ''} · v${v.version}${w.active ? '' : ' · inactive'}`,
-        title: v.label, lines: v.lines, inactive: !w.active,
+        title: v.label, lines: v.lines, inactive: !w.active, refs: v.refs, object: v.object,
         link: kind === 'process' ? `https://${this.ui}/lightning/setup/ProcessAutomation/home` : `https://${this.ui}/builder_platform_interaction/flowBuilder.app?flowId=${w.id}`,
       };
     }).filter(Boolean);
@@ -162,7 +163,7 @@ export class SfSearchSources {
       const obj = r.EntityDefinition?.QualifiedApiName || null;
       return {
         kind: 'validation', id: r.Id, name: r.ValidationName, sub: `${obj || 'object'}${r.Active ? '' : ' · inactive'}`, inactive: !r.Active,
-        lines: validationLines({ ...r, formula: cached.get(keyOf(r)) || '' }),
+        lines: validationLines({ ...r, formula: cached.get(keyOf(r)) || '' }), formula: cached.get(keyOf(r)) || '', object: obj,
         link: obj ? `https://${this.ui}/lightning/setup/ObjectManager/${obj}/ValidationRules/${r.Id}/view` : this.setup('ObjectManager', ''),
       };
     });

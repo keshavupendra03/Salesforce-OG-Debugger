@@ -6,6 +6,9 @@ import { parseLog, mergeLogs, summarize, groupQueries, errorPaths, nodeAtLine, C
 import { traceField, linesRun } from '../src/logs/field-trace.js';
 import { DEMO_LOG_SAMPLES } from '../src/logs/demo-logs.js';
 import { groupSessions, MAX_SPAN_MS } from '../src/logs/sessions.js';
+import { foldRegions } from '../src/explorer/code-tools.js';
+import { syntaxLines } from '../src/explorer/syntax.js';
+import { highlight } from '../src/apex/highlight.js';
 
 const idx = CodeIndex.fromUnits(DEMO_UNITS);
 const byLabel = (l) => idx.methods.find((m) => m.label === l);
@@ -315,6 +318,150 @@ test('field trace: references on lines that did not run are not counted when sta
   const coarse = parseLog(DEMO_LOG_SAMPLES[0].body.split('\n').filter((l) => !/STATEMENT_EXECUTE/.test(l)).join('\n'));
   const c = traceField(coarse, idx, 'Account', 'Industry').touches.find((x) => x.node.label === 'AccountTriggerHandler.beforeUpdate()');
   assert.ok(!linesRun(coarse, c.node).full && c.read);
+});
+
+const USE = await import('../src/usage/usage.js');
+const { DemoSearchSources: UseDemoSources } = await import('../src/search/demo-search.js');
+
+await testAsync('code flow: fields and methods used outside Apex (flows, rules, formulas, LWC, Aura, VF)', async () => {
+  // flow metadata: $Record, record variables, Get Records output, loops, writes through assignToReference / Update Records
+  const refs = USE.flowRefs({
+    start: { object: 'Case', triggerType: 'RecordAfterSave', filters: [{ field: 'Status', operator: 'EqualTo' }] },
+    variables: [{ name: 'acc', dataType: 'SObject', objectType: 'Account' }],
+    recordLookups: [{ name: 'Get_Contacts', object: 'Contact', storeOutputAutomatically: true, filters: [{ field: 'AccountId' }] }],
+    loops: [{ name: 'Each_Contact', collectionReference: 'Get_Contacts' }],
+    assignments: [{ name: 'Set', label: 'Set rating', assignmentItems: [{ assignToReference: 'acc.Rating', value: { elementReference: 'Each_Contact.Title' } }] }],
+    recordUpdates: [{ name: 'Save', label: 'Save account', inputReference: 'acc', inputAssignments: [{ field: 'Industry' }] }],
+    actionCalls: [{ name: 'Run', label: 'Run Apex', actionType: 'apex', actionName: 'LeadConverter' }],
+  });
+  const has = (o, f, a) => refs.fields.some((r) => r.object === o && r.field === f && r.access === a);
+  assert.ok(has('Case', 'Status', 'read'));
+  assert.ok(has('Account', 'Rating', 'write'));
+  assert.ok(has('Contact', 'Title', 'read')); // through the loop over Get Records
+  assert.ok(has('Contact', 'AccountId', 'read'));
+  assert.ok(has('Account', 'Industry', 'write'));
+  assert.deepEqual(refs.apex.map((a) => a.className), ['LeadConverter']);
+  // the demo org: Account.Industry in a flow, an (inactive) rule and a Visualforce page; StageName in a Process Builder
+  const s = new UseDemoSources();
+  const src = {};
+  for (const g of ['flow', 'validation', 'lwc', 'aura', 'vf']) src[g] = await s.load(g);
+  const kinds = (l) => l.map((u) => `${u.kind}:${u.name}`).sort();
+  assert.deepEqual(kinds(USE.fieldUsages(src, 'Account', 'Industry')), ['flow:Account_Industry_Sync', 'validation:Industry_Required_For_Customers', 'vf:AccountSummaryPdf']);
+  assert.ok(kinds(USE.fieldUsages(src, 'Opportunity', 'StageName')).includes('process:Opportunity_Stage_Update'));
+  // formula fields of the object
+  const f = USE.fieldUsages(src, 'Account', 'AnnualRevenue', [{ name: 'Revenue_Band__c', label: 'Revenue band', formula: 'IF(AnnualRevenue > 1000000, "Large", "Small")' }]);
+  assert.deepEqual(kinds(f), ['formula:Account.Revenue_Band__c']);
+  // methods: an LWC import, nothing for a method no component calls, invocable from a flow action
+  assert.deepEqual(kinds(USE.methodUsages(src, { className: 'OpportunityService', name: 'closeStale', annots: [] })), ['lwc:closeOpportunity']);
+  assert.deepEqual(USE.methodUsages(src, { className: 'OpportunityService', name: 'syncAccountIndustry', annots: [] }), []);
+  const inv = USE.methodUsages({ flow: [{ kind: 'flow', id: '301x', name: 'Convert', refs }] }, { className: 'LeadConverter', name: 'convert', annots: ['invocablemethod'] });
+  assert.deepEqual(kinds(inv), ['flow:Convert']);
+  assert.deepEqual(USE.methodUsages({ flow: [{ kind: 'flow', id: '301x', name: 'Convert', refs }] }, { className: 'LeadConverter', name: 'convert', annots: [] }), []);
+  // Aura: controller + c.method; Visualforce: controller + {!method}
+  const aura = { aura: [{ kind: 'aura', name: 'Picker', sub: 'component', lines: [{ text: '<aura:component controller="AccountController">' }] }, { kind: 'aura', name: 'Picker', sub: 'controller', lines: [{ text: 'var a = cmp.get("c.getIndustryAccounts");' }] }] };
+  assert.deepEqual(kinds(USE.methodUsages(aura, { className: 'AccountController', name: 'getIndustryAccounts', annots: ['auraenabled'] })), ['aura:Picker']);
+  const vf = { vf: [{ kind: 'vf', name: 'P', sub: 'page', lines: [{ text: '<apex:page controller="AccountController">' }, { text: '<apex:commandButton action="{!save}"/>' }] }] };
+  assert.deepEqual(kinds(USE.methodUsages(vf, { className: 'AccountController', name: 'save', annots: [] })), ['vf:P']);
+});
+
+const CL = await import('../src/explorer/code-links.js');
+
+test('OG Explorer: calls, classes and component references are links to the right place', () => {
+  const file = idx.files.find((f) => f.unit.name === 'AccountTriggerHandler');
+  const L = CL.apexLinks(idx, file);
+  const at = (text) => L.list.filter((l) => file.unit.body.split('\n')[l.line - 1].substr(l.col, l.len) === text);
+  // AccountService.normalizeIndustry(newList): the method, and AccountService: the class
+  const call = at('normalizeIndustry')[0];
+  assert.equal(idx.methodsById.get(call.targets[0].id).label, 'AccountService.normalizeIndustry()');
+  assert.equal(at('AccountService')[0].targets[0].type, 'type');
+  assert.ok(at('TriggerHandler').length); // extends TriggerHandler
+  const sig = CL.signature(idx.methodsById.get(call.targets[0].id));
+  assert.equal(sig, 'AccountService.normalizeIndustry(List<Account> accounts)');
+  // components: an LWC's Apex import, a VF controller / extension, Aura c.method
+  const ctx = {
+    method: (c, n) => ((idx.typesByShortName.get(c.toLowerCase()) || [])[0]?.methodsByName.get(n.toLowerCase()) || [])[0]?.id || null,
+    type: (n) => (idx.typesByShortName.get(n.toLowerCase()) || [])[0]?.key || null,
+    doc: (k) => k === 'lwc:childcard',
+  };
+  const [js, html] = CL.componentLinks({ kind: 'lwc', files: [
+    { name: 'x.js', text: "import closeOpp from '@salesforce/apex/OpportunityService.closeStale';\nimport Child from 'c/childCard';" },
+    { name: 'x.html', text: '<template><c-child-card></c-child-card></template>' },
+  ] }, ctx);
+  assert.equal(idx.methodsById.get(js.list[0].targets[0].id).label, 'OpportunityService.closeStale()');
+  assert.deepEqual(js.list.map((l) => l.kind), ['apex', 'component']);
+  assert.deepEqual(html.list[0].targets, [{ type: 'doc', key: 'lwc:childcard' }]);
+  const [vf] = CL.componentLinks({ kind: 'vfpage', files: [{ name: 'p', text: '<apex:page standardController="Account" extensions="AccountController">\n<apex:commandButton action="{!updateIndustry}"/>' }] }, ctx);
+  assert.deepEqual(vf.list.map((l) => l.kind), ['type', 'call']);
+  assert.equal(CL.linkify('a <b> c', new Map([[2, 0]]), [{ len: 3 }]), 'a <span class="tk-link" data-link="0">&lt;b&gt;</span> c');
+});
+
+const DSP = await import('../src/apex/dispatch.js');
+
+test('code flow: a trigger framework only reaches the handler each trigger really uses', () => {
+  const cls = (name, body) => ({ id: `01p${name}`.padEnd(18, '0'), name, kind: 'class', body });
+  const trg = (name, body) => ({ id: `01q${name}`.padEnd(18, '0'), name, kind: 'trigger', body });
+  const units = [
+    cls('ETTF_ITriggerHandler', 'public interface ETTF_ITriggerHandler { void AfterUpdate(Map<Id, sObject> newMap, Map<Id, sObject> oldMap); }'),
+    cls('ETTF_TriggerDispatcher', `public class ETTF_TriggerDispatcher {
+      public static void Run(String SObjectName) {
+        TriggerSettings__mdt m = TriggerSettings__mdt.getInstance(SObjectName);
+        ETTF_ITriggerHandler handler = (ETTF_ITriggerHandler) Type.forName(m.TriggerHandler_Class_Name__c).newInstance();
+        execute(handler, m);
+      }
+      private static void execute(ETTF_ITriggerHandler handler, TriggerSettings__mdt m) {
+        handler.AfterUpdate(Trigger.newMap, Trigger.oldMap);
+      }
+    }`),
+    cls('ddmTriggerHandler', `public class ddmTriggerHandler implements ETTF_ITriggerHandler {
+      public void AfterUpdate(Map<Id, sObject> newMap, Map<Id, sObject> oldMap) { ddmHighlightsPanelController.generateOrderOnReplacement('x'); }
+    }`),
+    cls('AccountTriggerHandler', `public class AccountTriggerHandler implements ETTF_ITriggerHandler {
+      public void AfterUpdate(Map<Id, sObject> newMap, Map<Id, sObject> oldMap) { }
+    }`),
+    cls('ddmHighlightsPanelController', 'public class ddmHighlightsPanelController { public static void generateOrderOnReplacement(String id) { } }'),
+    trg('ddmTrigger', "trigger ddmTrigger on DDM_Request__c (after update) { ETTF_TriggerDispatcher.Run('DDM'); }"),
+    trg('AccountTrigger', "trigger AccountTrigger on Account (after update) { ETTF_TriggerDispatcher.Run('Account'); }"),
+    trg('LegacyTrigger', "trigger LegacyTrigger on Legacy_Thing__c (after update) { ETTF_TriggerDispatcher.Run('DDM'); }"),
+  ];
+  const ix = CodeIndex.fromUnits(units);
+  const target = [...ix.methodsById.values()].find((m) => m.name === 'generateOrderOnReplacement');
+  const { paths } = ix.entryPaths([target.id], {});
+  assert.equal(paths.length, 3); // what the code alone allows: every trigger
+  const verdicts = (map) => Object.fromEntries(paths.map((p) => {
+    const M = (id) => ix.methodsById.get(id);
+    const hop = p.ids.findIndex((id, i) => i < p.ids.length - 1 && ix.callers(p.ids[i + 1], {}).find((c) => c.from === id)?.kinds?.has('dispatch'));
+    const r = DSP.handlerMatch(DSP.triggerFacts(M(p.ids[0]), ix), M(p.ids[hop + 1]).type, ix, map);
+    return [M(p.ids[0]).label, `${r.ok}/${r.how}`];
+  }));
+  // names only: ddmTrigger / 'DDM' ↔ ddmTriggerHandler
+  assert.deepEqual(verdicts(null), { ddmTrigger: 'true/name', AccountTrigger: 'false/name', LegacyTrigger: 'true/name' });
+  // with the org's TriggerSettings__mdt: exact, also for a trigger whose name says nothing
+  assert.deepEqual(DSP.dispatchMetadataTypes(units), ['TriggerSettings__mdt']);
+  const map = DSP.buildDispatchMap([
+    { DeveloperName: 'DDM', MasterLabel: 'DDM', TriggerHandler_Class_Name__c: 'ddmTriggerHandler' },
+    { DeveloperName: 'Account', MasterLabel: 'Account', TriggerHandler_Class_Name__c: 'AccountTriggerHandler' },
+  ], new Set(['ddmtriggerhandler', 'accounttriggerhandler']));
+  assert.deepEqual(verdicts(map), { ddmTrigger: 'true/metadata', AccountTrigger: 'false/metadata', LegacyTrigger: 'true/metadata' });
+  assert.equal(DSP.nameKey('AccountTriggerHandler'), 'account');
+  assert.equal(DSP.nameKey('DDM_Request__c'), 'ddmrequest');
+});
+
+test('code flow: the usual new XHandler().run() framework keeps its paths', () => {
+  // demo org: AccountTrigger → new AccountTriggerHandler().run() → TriggerHandler.run() → (virtual) beforeUpdate
+  const field = idx.analyzeField('Account', 'Industry');
+  const { paths } = idx.entryPaths([...field.keys()], {});
+  const M = (id) => idx.methodsById.get(id);
+  let checked = 0;
+  for (const p of paths) {
+    if (p.end !== 'entry' || M(p.ids[0]).kind !== 'trigger') continue;
+    const hop = p.ids.findIndex((id, i) => i < p.ids.length - 1 && idx.callers(p.ids[i + 1], {}).find((c) => c.from === id)?.kinds?.has('dispatch'));
+    if (hop < 0) continue;
+    const r = DSP.handlerMatch(DSP.triggerFacts(M(p.ids[0]), idx), M(p.ids[hop + 1]).type, idx, null);
+    assert.equal(r.ok, true, `${M(p.ids[hop + 1]).label} should stay`);
+    assert.equal(r.how, 'built');
+    checked++;
+  }
+  assert.ok(checked > 0);
 });
 
 const { ApexVersions, sfTime } = await import('../src/logs/apex-versions.js');
@@ -765,6 +912,47 @@ test('The Informant: org families, kinds and switching a request between prod an
   assert.deepEqual(fams[0].orgs.map(OG.shortName), ['production', 'preprod', 'uat']);
   assert.equal(fams.length, 3);
   assert.equal(OG.maskToken('00D5g000000AbCd!AQEAQB518L6A4pYZjZAem26660'), '00D5g000000AbCd…6660');
+});
+
+test('foldRegions: code blocks skip strings and comments; markup folds multi-line elements', () => {
+  const apex = [
+    'public class A {',          // 1
+    '  void run() {',            // 2
+    "    String s = '{ not }';", // 3
+    '    // { nor this',         // 4
+    '    for (Integer i : xs) {',// 5
+    '      go();',               // 6
+    '    }',                     // 7
+    '    if (x) { y(); }',       // 8 one-liner: not foldable
+    '  }',                       // 9
+    '}',                         // 10
+  ].join('\n');
+  assert.deepEqual([...foldRegions(apex, 'apex')], [[5, 7], [2, 9], [1, 10]]);
+  const html = '<template>\n  <div>\n    <br>\n    <!-- <p> -->\n  </div>\n  <c-x/>\n</template>';
+  assert.deepEqual([...foldRegions(html, 'markup')], [[2, 5], [1, 7]]);
+});
+
+test('code looks: Apex declarations, calls and types; LWC JavaScript and markup tokens keep their links', () => {
+  const toks = (html) => [...html.matchAll(/<span class="([^"]+)">([^<]*)<\/span>/g)].map((m) => `${m[1]}:${m[2]}`);
+  const st = { depth: 0 };
+  const a = toks(highlight('    ETTF_ITriggerHandler handler=(ETTF_ITriggerHandler) classType.newInstance();', false, null, null, st).html);
+  assert.ok(a.includes('tk-type:ETTF_ITriggerHandler') && a.includes('tk-def:handler') && a.includes('tk-fn:newInstance'), a.join(' '));
+  // a plain assignment declares nothing; a comparison is not a generic
+  assert.ok(!toks(highlight('classType = x;', false).html).some((t) => t.startsWith('tk-def')));
+  assert.ok(!toks(highlight('if (a > b) return;', false).html).some((t) => t.startsWith('tk-def')));
+  assert.ok(toks(highlight('List<Account> changed = null;', false).html).includes('tk-def:changed'));
+  // the text itself never changes (the Executor's editor overlays it)
+  const line = "  Map<Id, Account> m = new Map<Id, Account>([SELECT Id FROM Account LIMIT 5]); // 'x'";
+  assert.equal(highlight(line, false).html.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'"), line);
+  const js = syntaxLines("import closeOpp from '@salesforce/apex/OpportunityService.closeStale';\nconst n = 2; // c", 'js',
+    { list: [{ len: 11 }], byLine: new Map([[1, new Map([[22, 0]])]]) });
+  assert.match(js[0], /<span class="tk-kw">import<\/span>/);
+  assert.match(js[0], /<span class="tk-link" data-link="0"><span class="tk-str">@salesforce<\/span><\/span>/);
+  assert.match(js[1], /<span class="tk-def">n<\/span>.*<span class="tk-num">2<\/span>.*<span class="tk-com">\/\/ c<\/span>/);
+  const html = syntaxLines('<template>\n  <lightning-button label="Go"\n    onclick={go}></lightning-button>\n  <!-- x -->\n</template>', 'markup');
+  assert.match(html[1], /<span class="tk-tag">lightning-button<\/span> <span class="tk-attr">label<\/span>=<span class="tk-str">"Go"<\/span>/);
+  assert.match(html[2], /<span class="tk-attr">onclick<\/span>=<span class="tk-expr">\{go\}<\/span><span class="tk-tagp">&gt;/);
+  assert.match(html[3], /<span class="tk-com">&lt;!-- x --&gt;<\/span>/);
 });
 
 console.log(`\n${passed} tests passed`);
