@@ -175,7 +175,7 @@
 @media (prefers-color-scheme: dark) { .tk-tag { color: #e06c75; } .tk-attr { color: #d19a66; } .tk-expr { color: #56b6c2; } }
 
 /* ---------- look: Salesforce Developer Console ---------- */
-.cx-main.look-dc {
+.look-dc {
   --bg: #f4f6f9; --panel: #ffffff; --panel-2: #f3f3f3; --line: #dddbda; --line-strong: #c9c7c5;
   --text: #080707; --muted: #54698d; --faint: #9a9a9a; --accent: #0070d2; --accent-soft: #e8f2fc; --code-bg: #ffffff;
   color-scheme: light; color: var(--text);
@@ -203,7 +203,7 @@
 .look-dc ::highlight(og-same) { background-color: rgba(255, 213, 0, .45); }
 
 /* ---------- look: VS Code (dark) ---------- */
-.cx-main.look-vsc {
+.look-vsc {
   --bg: #181818; --panel: #1f1f1f; --panel-2: #181818; --line: #2b2b2b; --line-strong: #3c3c3c;
   --text: #cccccc; --muted: #9d9d9d; --faint: #6e7681; --accent: #0078d4; --accent-soft: #04395e; --code-bg: #1f1f1f;
   --shadow: 0 2px 8px rgba(0, 0, 0, .5);

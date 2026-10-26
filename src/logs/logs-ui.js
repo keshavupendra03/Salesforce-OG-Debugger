@@ -465,7 +465,7 @@ export function mountLogs(root, backend, sources = {}) {
   // F: open the code pane's step full screen (Execution Path, Field Trace)
   document.addEventListener('keydown', (e) => {
     if (!S.active || e.key.toLowerCase() !== 'f' || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-    if (e.target.closest?.('input, textarea, select, [contenteditable]') || document.querySelector('.fx, .bmc, .dx-modal')) return;
+    if (e.target.closest?.('input, textarea, select, [contenteditable]') || document.querySelector('.fx, .bmc, .dx-modal, .lg-pop')) return;
     if ((S.tab === 'path' || S.tab === 'field') && el.xpCode?.isConnected && el.xpCode.querySelector('.code-expand')) {
       e.preventDefault();
       el.xpCode.focusOpen?.();
@@ -787,6 +787,7 @@ export function mountLogs(root, backend, sources = {}) {
     el.logCount = h('span', { class: 'lg-count' }, '0');
     el.liveBtn = h('button', { class: 'lg-switch', role: 'switch', 'aria-checked': String(S.live), title: 'Refresh the list every 5 seconds', onclick: () => setLive(!S.live) }, h('i'), 'Live');
     el.refreshBtn = h('button', { class: 'ghost small lg-icon-btn', title: 'Refresh now', 'aria-label': 'Refresh', onclick: () => loadLogs(true) }, '↻');
+    el.popBtn = h('button', { class: 'ghost small lg-icon-btn lg-pop-btn', title: 'Open the log list in a big window', 'aria-label': 'Expand the log list', onclick: () => (S.pop ? closePop() : openPop()) }, '⤢');
     el.delAll = h('button', { class: 'ghost small danger-text', onclick: (e) => armConfirm(e.currentTarget, 'Confirm', deleteFiltered) }, 'Delete all');
     el.search = h('input', { type: 'search', placeholder: 'Filter by operation, user or status', spellcheck: 'false', 'aria-label': 'Filter logs' });
     el.userFilter = h('select', { 'aria-label': 'Filter by user' });
@@ -805,7 +806,7 @@ export function mountLogs(root, backend, sources = {}) {
 
     el.logsBox.append(
       h('header', { class: 'lg-card-head' }, h('span', {}, 'Debug logs'), el.logCount,
-        h('div', { class: 'lg-head-tools' }, el.liveBtn, el.refreshBtn)),
+        h('div', { class: 'lg-head-tools' }, el.liveBtn, el.refreshBtn, el.popBtn)),
       h('div', { class: 'lg-filters' },
         h('div', { class: 'lg-seg', role: 'tablist', 'aria-label': 'Log list mode' }, el.modeBtns),
         el.scope,
@@ -821,8 +822,50 @@ export function mountLogs(root, backend, sources = {}) {
       const list = filteredLogs();
       const i = list.findIndex((l) => l.Id === S.selectedId);
       const next = list[Math.max(0, Math.min(list.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
-      if (next && next.Id !== S.selectedId) openLog(next.Id);
+      if (next && next.Id !== S.selectedId) { S.popStay = true; openLog(next.Id); S.popStay = false; } // the check runs before openLog's first await
+      if (S.pop) el.logList.querySelector(`[data-id="${next?.Id}"]`)?.scrollIntoView({ block: 'nearest' });
     });
+  }
+
+  // The log list in a big window: the same list (filters, mode, ticked logs, Live) moves into a popup and back,
+  // so nothing is lost. Opening a log closes it so you see the log; arrow keys browse without closing.
+  function openPop() {
+    if (S.pop) return;
+    const scroll = el.logList.scrollTop;
+    el.popHolder = h('section', { class: 'lg-card lg-pop-holder' },
+      h('span', { class: 'lg-pop-holder-ico', 'aria-hidden': 'true' }, '⤢'),
+      h('span', {}, 'Debug logs are open in a big window'),
+      h('button', { class: 'ghost small', onclick: () => closePop() }, 'Bring back'));
+    el.side.replaceChild(el.popHolder, el.logsBox);
+    S.pop = h('div', {
+      class: 'lg-pop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Debug logs',
+      onmousedown: (e) => { if (e.target === S.pop) closePop(); },
+    }, h('div', { class: 'lg-pop-card lg-side' }, el.logsBox));
+    root.append(S.pop);
+    el.popBtn.textContent = '⤡';
+    el.popBtn.title = 'Back to the sidebar (Esc)';
+    el.popBtn.setAttribute('aria-label', 'Back to the sidebar');
+    el.logList.scrollTop = scroll;
+    el.logList.focus({ preventScroll: true });
+    document.addEventListener('keydown', popKeys, true);
+  }
+  function closePop() {
+    if (!S.pop) return;
+    const scroll = el.logList.scrollTop;
+    el.side.replaceChild(el.logsBox, el.popHolder);
+    S.pop.remove();
+    S.pop = null;
+    el.popBtn.textContent = '⤢';
+    el.popBtn.title = 'Open the log list in a big window';
+    el.popBtn.setAttribute('aria-label', 'Expand the log list');
+    el.logList.scrollTop = scroll;
+    el.logList.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+    document.removeEventListener('keydown', popKeys, true);
+  }
+  function popKeys(e) {
+    if (!S.pop || !S.pop.isConnected || S.pop.closest('[hidden]')) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePop(); }
+    else if (e.key === 'Enter' && e.target === el.logList && S.selectedId) { e.preventDefault(); closePop(); }
   }
 
   const isError = (l) => !!l.Status && l.Status !== 'Success';
@@ -891,7 +934,12 @@ export function mountLogs(root, backend, sources = {}) {
       const latest = buildSessions(S.logs)[0];
       S.sess.latest = latest ? { id: latest.logs[0].Id, ids: new Set(latest.logs.map((l) => l.Id)) } : null;
     }
+    // re-rendering empties the list for a moment, which would snap it (and a scrolling sidebar) back to the top:
+    // ticking a log, opening a session or a Live refresh must leave you where you were
+    const keep = [];
+    for (let n = el.logList; n && n !== document.body; n = n.parentElement) if (n.scrollTop) keep.push([n, n.scrollTop]);
     el.logList.replaceChildren(...(S.sess.on ? visibleSessions().map(sessionRow) : list.map((l) => logRow(l))));
+    for (const [n, top] of keep) n.scrollTop = top;
   }
 
   const isIncluded = (l) => (S.sess.pick.has(l.Id) ? S.sess.pick.get(l.Id) : !!S.sess.latest?.ids.has(l.Id));
@@ -1051,6 +1099,7 @@ export function mountLogs(root, backend, sources = {}) {
   }
 
   async function openSession(ids) {
+    if (S.pop && !S.popStay) closePop();
     const metas = ids.map((id) => S.logs.find((l) => l.Id === id)).filter(Boolean).sort((a, b) => startMs(a) - startMs(b));
     if (metas.length === 1) return openLog(metas[0].Id);
     const key = sessionKey(metas);
@@ -1302,6 +1351,7 @@ export function mountLogs(root, backend, sources = {}) {
   }
 
   async function openLog(id) {
+    if (S.pop && !S.popStay) closePop();
     S.selectedId = id;
     S.fresh.delete(id);
     for (const li of el.logList.children) {
@@ -1582,15 +1632,22 @@ export function mountLogs(root, backend, sources = {}) {
 
     const modeBtn = (mode, label, disabled) => h('button', {
       role: 'tab', 'aria-selected': String(X.mode === mode), disabled,
-      onclick: () => { if (X.mode !== mode) { S.xp = { mode, selKey: null, focus: 0 }; showTab('path'); } },
+      onclick: () => {
+        if (X.mode === mode) return;
+        if (X.mode === 'tree' && X.tree) X.tree.scroll = left.scrollTop;
+        S.xp = { ...X, mode, selKey: null, focus: 0 };
+        showTab('path');
+      },
     }, label);
     left.append(h('div', { class: 'xp-top' },
       h('div', { class: 'xp-modes', role: 'tablist' },
         modeBtn('errors', p.paths.length ? `Error paths · ${p.paths.length}` : 'No errors', !p.paths.length),
-        modeBtn('tree', 'Call tree')),
+        modeBtn('tree', 'Call tree'),
+        sources.entryPaths ? modeBtn('entry', 'Entry paths') : null),
       h('span', { class: 'lv-muted' }, X.mode === 'errors'
         ? 'From the entry point down to the line that failed. Click any step to open its code.'
-        : 'Code units, methods and DML in the order they ran. Paths that hit an error are expanded.')));
+        : X.mode === 'entry' ? 'Every way the code can reach a method that ran here (like Code Flow), not only the way it ran this time.'
+          : 'Code units, methods and DML in the order they ran. Paths that hit an error are expanded.')));
 
     const apexLevel = p.levels.find((l) => l.cat === 'APEX_CODE')?.level;
     if (apexLevel && !['FINE', 'FINER', 'FINEST'].includes(apexLevel)) {
@@ -1598,11 +1655,191 @@ export function mountLogs(root, backend, sources = {}) {
         `This log used Apex Code = ${apexLevel}; methods only appear at FINE or finer, so paths show code units, DML and errors. Trace again with Apex Code = FINEST for full paths.`));
     }
     if (X.mode === 'errors') renderErrorPaths(left, p);
+    else if (X.mode === 'entry') renderEntryPaths(left, p);
     else renderCallTree(left, p);
+  }
+
+  // ---------- Entry paths: Code Flow's entry paths of a method that ran in this log ----------
+  const stepKey = (src) => `${src.kind}:${String(src.qual || src.name).toLowerCase()}.${String(src.method || '').toLowerCase()}`;
+  function loggedMethods(p) {
+    const out = new Map();
+    const walk = (n) => {
+      const src = n.src;
+      if (src && (src.kind === 'trigger' || (src.kind === 'class' && src.method))) {
+        const key = stepKey(src);
+        if (!out.has(key)) out.set(key, { key, src, node: n, label: src.kind === 'trigger' ? `${src.name} (trigger)` : `${src.qual}.${src.method}()`, failed: false, runs: 0 });
+        const x = out.get(key);
+        x.runs++;
+        if (n.n?.error) x.failed = true;
+      }
+      for (const c of n.children || []) walk(c);
+    };
+    walk(p.root);
+    return [...out.values()];
+  }
+
+  // the step a node stands for: itself, the method it's in, or (a code unit, e.g. an LWC call) the first method it runs
+  function methodStepOf(n, steps) {
+    const byKey = new Map(steps.map((x) => [x.key, x]));
+    for (let x = n; x && x.kind !== 'root'; x = x.parent) if (x.src && byKey.has(stepKey(x.src))) return byKey.get(stepKey(x.src));
+    const down = (m) => {
+      for (const c of m.children || []) {
+        if (c.src && byKey.has(stepKey(c.src))) return byKey.get(stepKey(c.src));
+        const hit = down(c);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return n ? down(n) : null;
+  }
+
+  function renderEntryPaths(left, p) {
+    const steps = loggedMethods(p);
+    if (!steps.length) {
+      left.append(h('p', { class: 'xp-note' }, 'No Apex methods or triggers in this log to look up. Trace with Apex Code = FINE or finer to log method calls.'));
+      return;
+    }
+    // which one: what you picked here before, else the step you selected (call tree / error path), else where it failed
+    const failing = p.paths[0]?.chain[p.paths[0].chain.length - 1];
+    const pick = steps.find((x) => x.key === S.xp.entryKey)
+      || methodStepOf(S.xp.lastNode, steps) || methodStepOf(failing, steps)
+      || steps.find((x) => x.failed) || steps[0];
+    S.xp.entryKey = pick.key;
+    const body = h('div', { class: 'xp-entry-body' });
+    left.append(h('div', { class: 'xp-entry-top' }, h('label', { class: 'xp-entry-label', for: 'xp-entry-q' }, 'Who calls'),
+      methodSearch(steps, pick, (x) => { S.xp.entryKey = x.key; draw(x); })), body);
+
+    // a step clicked here: its code on the right, and the call tree opens to it (when it ran in this log)
+    const openStep = (step) => {
+      const ran = steps.find((x) => x.key === stepKey(step));
+      if (ran) S.xp.treeTarget = ran.node;
+      const trigger = step.kind === 'trigger';
+      const frame = {
+        kind: trigger ? 'unit' : 'method', sub: trigger ? 'trigger' : 'method', li: -1, children: [], n: {}, start: 0, end: 0,
+        label: step.label || step.qual,
+        src: trigger ? { kind: 'trigger', name: step.name, qual: step.name } : { kind: 'class', name: step.name, qual: step.qual, method: step.method },
+      };
+      S.xp.selKey = null;
+      for (const c of el.vBody.querySelectorAll('.xp-card.selected')) c.classList.remove('selected');
+      openFrame({ frame, N: frame, focus: null, focusLine: step.line });
+    };
+    let seq = 0;
+    async function draw(step) {
+      const mine = ++seq;
+      body.replaceChildren(h('div', { class: 'lg-loading' }, h('span', { class: 'lg-spinner' }), 'Finding every caller…'));
+      const r = await sources.entryPaths(step.src, openStep);
+      if (mine !== seq || !body.isConnected) return;
+      if (!r || r.error) { body.replaceChildren(h('p', { class: 'xp-note' }, r?.error || 'Entry paths aren’t available.')); return; }
+      body.replaceChildren(r.el);
+      select(step.node); // its code, as it ran in this log
+    }
+    draw(pick);
+  }
+
+  // Type to find a method that ran in this log: words in any order, ↑ ↓ Enter, Esc
+  function methodSearch(steps, current, onPick) {
+    const wrap = h('div', { class: 'xp-ms' });
+    const input = h('input', {
+      id: 'xp-entry-q', type: 'search', class: 'xp-ms-input', value: current.label, spellcheck: 'false', autocomplete: 'off',
+      placeholder: `Type a method or trigger that ran (${steps.length})`, role: 'combobox', 'aria-expanded': 'false', 'aria-autocomplete': 'list',
+    });
+    const list = h('ul', { class: 'xp-ms-list', role: 'listbox', hidden: true });
+    wrap.append(input, list);
+    let items = [];
+    let active = 0;
+    let chosen = current;
+    const matches = (q) => {
+      const words = q.toLowerCase().split(/[\s.()]+/).filter(Boolean);
+      if (!words.length) return steps;
+      return steps.filter((x) => { const l = x.label.toLowerCase(); return words.every((w) => l.includes(w)); })
+        .sort((a, b) => a.label.toLowerCase().indexOf(words[0]) - b.label.toLowerCase().indexOf(words[0]));
+    };
+    const mark = (label, q) => {
+      const words = q.toLowerCase().split(/[\s.()]+/).filter(Boolean);
+      const out = [];
+      let i = 0;
+      const low = label.toLowerCase();
+      while (i < label.length) {
+        const w = words.find((x) => low.startsWith(x, i));
+        if (w) { out.push(h('mark', {}, label.slice(i, i + w.length))); i += w.length; } else { out.push(label[i]); i++; }
+      }
+      return out;
+    };
+    const show = () => {
+      const q = input.value === chosen.label ? '' : input.value;
+      items = matches(q).slice(0, 80);
+      active = Math.max(0, items.indexOf(chosen));
+      list.replaceChildren(...(items.length ? items.map((x, i) => h('li', {
+        class: `xp-ms-item${i === active ? ' active' : ''}${x === chosen ? ' sel' : ''}`, role: 'option', 'aria-selected': String(i === active),
+        onmousedown: (e) => { e.preventDefault(); choose(x); },
+      }, h('span', { class: 'xp-ms-name' }, ...mark(x.label, q)),
+      x.failed ? h('span', { class: 'xp-ms-fail', title: 'Failed in this log' }, '✕ failed') : null,
+      x.runs > 1 ? h('span', { class: 'xp-ms-runs' }, `×${x.runs}`) : null)) : [h('li', { class: 'xp-ms-none' }, 'Nothing that ran in this log matches')]));
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      list.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+    };
+    const hide = () => { list.hidden = true; input.setAttribute('aria-expanded', 'false'); };
+    const choose = (x) => { chosen = x; input.value = x.label; hide(); input.blur(); onPick(x); };
+    const move = (d) => {
+      if (list.hidden) { show(); return; }
+      if (!items.length) return;
+      active = (active + d + items.length) % items.length;
+      [...list.children].forEach((li, i) => li.classList.toggle('active', i === active));
+      list.children[active]?.scrollIntoView({ block: 'nearest' });
+    };
+    input.addEventListener('focus', () => { input.select(); show(); });
+    input.addEventListener('input', show);
+    input.addEventListener('blur', () => setTimeout(() => { hide(); if (!input.value.trim()) input.value = chosen.label; }, 120));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); if (items[active]) choose(items[active]); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); input.value = chosen.label; hide(); input.blur(); }
+    });
+    return wrap;
+  }
+
+  // ---------- copying error paths (like Code Flow's entry paths) ----------
+  function errorPathText(p, e, i) {
+    const [type, text] = splitErr(e.head);
+    const out = [`Error path ${i + 1}${p.paths.length > 1 ? ` of ${p.paths.length}` : ''} · ${type}${text ? `: ${text}` : ''} · ${e.fatal ? 'uncaught' : 'thrown'}${e.rootCause ? ' · root cause' : ''}`];
+    let k = 0;
+    e.chain.forEach((n, j) => {
+      const prev = e.chain[j - 1];
+      if (n.kind === 'error') { out.push(`       ✕ ${caption(prev, n, e)}`); return; }
+      if (prev) out.push(`       ↓ ${caption(prev, n, e)}`);
+      out.push(`  ${++k}. ${displayName(n)}`);
+    });
+    if (e.stack.length) out.push('  Stack trace:', ...e.stack.map((sf) => `    ${sf.kind === 'trigger' ? 'Trigger' : 'Class'}.${sf.qual}: line ${sf.line}, column ${sf.col}`));
+    return out;
+  }
+  function errorPathsHeading(p, count) {
+    const meta = p.merged ? null : S.logs.find((l) => l.Id === S.selectedId);
+    const what = meta ? `${meta.Operation || 'Debug log'} · ${meta.LogUser?.Name || ''}` : 'Debug log session';
+    return `Where it failed: ${what}\n${count === 1 ? 'One error path' : `${count} error paths`}, from the entry point down to the line that threw`;
+  }
+  const LOG_COPY_FOOTER = '(Copied from Salesforce OG Debugger · Debug Logs)';
+  async function copyText(btn, text, done) {
+    btn.lastCopied = text; // (tests read it back)
+    try { await navigator.clipboard.writeText(text); } catch {
+      const ta = h('textarea', { style: 'position:fixed;opacity:0' }, text);
+      document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    const was = btn.innerHTML;
+    btn.classList.add('copied');
+    btn.textContent = btn.classList.contains('path-copy') ? '✓' : `✓ ${done}`;
+    setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = was; }, 1400);
   }
 
   function renderErrorPaths(left, p) {
     let focusCard = null;
+    left.append(h('div', { class: 'paths-tools xp-copy-tools' },
+      h('span', {}, `${p.paths.length} error path${p.paths.length === 1 ? '' : 's'}`),
+      h('button', {
+        class: 'ghost small path-copy-all', title: 'Copy every error path as plain text, ready to paste into Teams, an email or ChatGPT',
+        onclick: (ev) => copyText(ev.currentTarget, [errorPathsHeading(p, p.paths.length), ...p.paths.flatMap((x, k) => ['', ...errorPathText(p, x, k)]), '', LOG_COPY_FOOTER].join('\n'), 'Copied all paths'),
+      }, h('span', { 'aria-hidden': 'true' }, '⧉'), ' Copy all paths')));
     p.paths.forEach((e, i) => {
       const [type, text] = splitErr(e.head);
       const card = h('article', { class: `xp-err${e.fatal ? ' fatal' : ''}` },
@@ -1612,7 +1849,11 @@ export function mountLogs(root, backend, sources = {}) {
           h('div', { class: 'xp-tags' },
             e.rootCause ? h('span', { class: 'xp-tag root', title: 'A later error was caused by this one' }, 'Root cause') : null,
             h('span', { class: `xp-tag ${e.fatal ? 'bad' : 'warn'}`, title: e.fatal ? 'Not caught: the transaction failed' : 'Thrown, but the log doesn’t show it ending the transaction (it may have been caught)' },
-              e.fatal ? 'Uncaught' : e.count > 1 ? `Thrown ×${e.count}` : 'Thrown'))),
+              e.fatal ? 'Uncaught' : e.count > 1 ? `Thrown ×${e.count}` : 'Thrown'),
+            h('button', {
+              class: 'path-copy', title: 'Copy this error path as plain text', 'aria-label': `Copy error path ${i + 1}`,
+              onclick: (ev) => { ev.stopPropagation(); copyText(ev.currentTarget, [errorPathsHeading(p, 1), '', ...errorPathText(p, e, i), '', LOG_COPY_FOOTER].join('\n'), 'Copied'); },
+            }, '⧉'))),
         p.merged ? sessionTrail(p, e) : null,
         chainList(e),
         e.stack.length ? stackBox(e) : null);
@@ -1692,11 +1933,45 @@ export function mountLogs(root, backend, sources = {}) {
     openFrame({ frame, N: frame, focus: { kind: 'error', line: sf.line, label: e.head }, focusLine: sf.line, err: e });
   }
 
+  // The call tree is built once per log and kept, so switching to Error / Entry paths and back (or to another
+  // sub-tab) leaves it as you left it. It only moves when you pick a step in Entry paths (S.xp.treeTarget).
   function renderCallTree(left, p) {
+    const X = S.xp;
+    if (!X.tree || X.tree.p !== p) { X.tree = buildCallTree(p); X.treeSel = null; }
+    const T = X.tree;
+    left.append(T.ul);
+    const errOf = (n) => p.paths.find((x) => x.at.node === n);
+    const target = X.treeTarget;
+    X.treeTarget = null;
+    if (target) {
+      T.reveal(target);
+      select(target, null, errOf(target));
+      requestAnimationFrame(() => left.querySelector(`.xp-card[data-key="n${target.li}"]`)?.scrollIntoView({ block: 'center' }));
+      return;
+    }
+    if (T.scroll != null) requestAnimationFrame(() => { left.scrollTop = T.scroll; });
+    const sel = X.treeSel || T.first;
+    if (sel) select(sel, null, errOf(sel));
+  }
+
+  function buildCallTree(p) {
     const ul = h('ul', { class: 'tree xp-tree' });
+    const kidsOf = new Map(); // a node (or the root) → { list, ch, to, depth, more }: its children built so far
+    const liOf = new Map(); // node → { toggle }
     let budget = 80;
     let firstErr = null;
-    const build = (n, depth) => {
+    const appendPage = (k) => {
+      k.more?.remove();
+      k.more = null;
+      const to = Math.min(k.ch.length, k.to + PAGE);
+      for (let i = k.to; i < to; i++) k.list.append(build(k.ch[i], k.depth));
+      k.to = to;
+      if (to < k.ch.length) {
+        k.more = h('li', {}, h('button', { class: 'ghost small', onclick: () => appendPage(k) }, `Show ${Math.min(PAGE, k.ch.length - to)} more of ${num(k.ch.length - to)}`));
+        k.list.append(k.more);
+      }
+    };
+    function build(n, depth) {
       const ch = codeKids(n);
       const li = h('li', {});
       const caret = h('button', { class: `caret${ch.length ? '' : ' none'}`, 'aria-expanded': 'false', 'aria-label': 'Show calls', tabindex: ch.length ? '0' : '-1' }, '▸');
@@ -1706,38 +1981,42 @@ export function mountLogs(root, backend, sources = {}) {
       const cap = h('div', { class: 'via-caption', hidden: true }, n.kind === 'dml' ? 'fires' : n.kind === 'tx' ? 'runs' : 'calls');
       const sub = h('ul', { hidden: true });
       li.append(cap, sub);
-      let built = false;
       const toggle = (open = sub.hidden) => {
         if (!ch.length) return;
-        if (open && !built) {
-          built = true;
-          appendPage(sub, ch, depth + 1, 0);
-        }
+        if (open && !kidsOf.has(n)) { kidsOf.set(n, { list: sub, ch, to: 0, depth: depth + 1 }); appendPage(kidsOf.get(n)); }
         sub.hidden = !open;
         cap.hidden = !open;
         caret.setAttribute('aria-expanded', String(open));
       };
+      liOf.set(n, { toggle });
       caret.addEventListener('click', (ev) => { ev.stopPropagation(); toggle(); });
       if (ch.length && (n.n.error || budget > 0)) { budget -= ch.length; toggle(true); }
       return li;
-    };
-    const appendPage = (list, ch, depth, from) => {
-      const to = Math.min(ch.length, from + PAGE);
-      for (let i = from; i < to; i++) list.append(build(ch[i], depth));
-      if (to < ch.length) {
-        const more = h('li', {}, h('button', { class: 'ghost small', onclick: () => { more.remove(); appendPage(list, ch, depth, to); } }, `Show ${Math.min(PAGE, ch.length - to)} more of ${num(ch.length - to)}`));
-        list.append(more);
+    }
+    const top = { list: ul, ch: codeKids(p.root), to: 0, depth: 0 };
+    kidsOf.set(p.root, top);
+    appendPage(top);
+    // open the branch down to a node, including "show more" pages on the way
+    const codeParent = (n) => { for (let x = n.parent; x; x = x.parent) if (x.kind === 'root' || FRAME_KINDS.has(x.kind)) return x; return p.root; };
+    const reveal = (n) => {
+      const chain = [];
+      for (let x = n; x && x.kind !== 'root'; x = codeParent(x)) chain.unshift(x);
+      let parent = p.root;
+      for (const x of chain) {
+        if (parent !== p.root) liOf.get(parent)?.toggle(true);
+        const k = kidsOf.get(parent);
+        if (!k) return;
+        const i = k.ch.indexOf(x);
+        if (i < 0) return;
+        while (k.to <= i) appendPage(k);
+        parent = x;
       }
     };
-    const top = codeKids(p.root);
-    appendPage(ul, top, 0, 0);
-    left.append(ul);
     const firstWithSource = (list) => {
       for (const n of list) { if (n.src) return n; const hit = firstWithSource(codeKids(n)); if (hit) return hit; }
       return null;
     };
-    const first = firstErr || firstWithSource(top) || top[0];
-    if (first) select(first, null, p.paths.find((x) => x.at.node === first));
+    return { p, ul, reveal, first: firstErr || firstWithSource(top.ch) || top.ch[0], scroll: null };
   }
 
   function frameCard(n, o = {}) {
@@ -1776,6 +2055,8 @@ export function mountLogs(root, backend, sources = {}) {
 
   function select(n, next, err) {
     S.xp.selKey = `n${n.li}`;
+    S.xp.lastNode = n;
+    if (S.xp.mode === 'tree') S.xp.treeSel = n;
     for (const c of el.vBody.querySelectorAll('.xp-card.selected')) c.classList.remove('selected');
     for (const c of el.vBody.querySelectorAll(`.xp-card[data-key="n${n.li}"]`)) c.classList.add('selected');
     const frame = srcFrameOf(n);
@@ -1930,7 +2211,8 @@ export function mountLogs(root, backend, sources = {}) {
         h('span', {}, `${unit.name}.${m.ext} · lines ${m.range[0]}–${m.range[1]}`),
         m.entry ? h('span', { class: 'entry', style: `--e:${m.entry[1]}` }, m.entry[0]) : null,
         m.canNarrow ? h('button', { class: 'link', onclick: () => renderSource({ ...o, whole: !o.whole }) }, o.whole ? 'Method only' : 'Whole class') : null,
-        h('button', { class: 'link', onclick: () => jumpTo((focus || N).li) }, `Log line ${(focus || N).li + 1}`),
+        ...codeActions(o),
+        (focus || N).li >= 0 ? h('button', { class: 'link', onclick: () => jumpTo((focus || N).li) }, `Log line ${(focus || N).li + 1}`) : null, // (an entry-path step isn't a line of this log)
         m.url ? h('a', { href: m.url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null),
       versionNote(unit, unit.version?.latest ? () => renderSource({ ...o, unit: unit.version.latest }) : null),
       m.errText || refs ? codeDetails([m.errText ? errBox(m.errText) : null, refs], detailsSummary(marks, m.range, !!m.errText)) : null);
@@ -1939,6 +2221,22 @@ export function mountLogs(root, backend, sources = {}) {
     pane.dataset.frame = String(frame.li);
     el.xpCode.focusOpen = () => openFocusView(o);
     scrollToRow(scroller, focusLine || [...m.rowCls.keys()][0] || m.range[0]);
+  }
+
+  // Copy method / Copy class (or trigger) / Open in OG Explorer, for the code shown. before(): e.g. close the full-screen view.
+  function codeActions(o, before) {
+    const { unit, frame, focusLine } = o;
+    if (!unit || unit.kind === 'anon') return [];
+    const trigger = unit.kind === 'trigger';
+    const meth = !trigger && frame?.kind === 'method' ? findMethod(unit, frame.src, focusLine) : null;
+    const act = (label, title, fn) => h('button', { class: 'link code-act', title, onclick: (e) => fn(e.currentTarget) }, label);
+    return [
+      meth ? act('⧉ Copy method', `Copy ${meth.name} (lines ${meth.startLine}–${meth.endLine})`,
+        (b) => copyText(b, unit.body.split('\n').slice(meth.startLine - 1, meth.endLine).join('\n'), 'Copied')) : null,
+      act(trigger ? '⧉ Copy trigger' : '⧉ Copy class', `Copy all of ${unit.name}`, (b) => copyText(b, unit.body, 'Copied')),
+      sources.openInExplorer ? act('Open in OG Explorer', `Open ${unit.name} in OG Explorer${meth ? `, at ${meth.name}` : ''}`,
+        () => { before?.(); sources.openInExplorer(unit, meth?.startLine || focusLine || 1); }) : null,
+    ].filter(Boolean);
   }
 
   // ---------- focus view: source + this step's log, full screen ----------
@@ -2118,7 +2416,7 @@ export function mountLogs(root, backend, sources = {}) {
     const rail = (side, label) => h('button', { class: `fx-rail fx-rail-${side}`, title: `Show ${label}`, onclick: () => setCollapsed(null) },
       h('span', { 'aria-hidden': 'true' }, side === 'src' ? '›' : '‹'), h('span', { class: 'fx-rail-label' }, label));
     const left = h('section', { class: 'fx-pane fx-left' },
-      paneHead('src', 'Apex', h('span', { class: 'fx-head-extra' }, srcSub, wholeBtn, o.unit.id && sources.setupUrl ? h('a', { href: sources.setupUrl(o.unit), target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null)),
+      paneHead('src', 'Apex', h('span', { class: 'fx-head-extra' }, srcSub, wholeBtn, ...codeActions(o, () => close()), o.unit.id && sources.setupUrl ? h('a', { href: sources.setupUrl(o.unit), target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null)),
       versionNote(o.unit, null), srcBody, rail('src', 'Apex source'));
     const right = h('section', { class: 'fx-pane fx-right' },
       paneHead('log', 'From the log', tabsEl), detailsBody, logPanel, rail('log', 'Log details'));

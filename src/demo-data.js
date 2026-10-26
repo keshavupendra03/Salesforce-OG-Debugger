@@ -212,6 +212,10 @@ public with sharing class OpportunityService {
         }
         update toUpdate;
     }
+
+    public static String closeReasonMessage() {
+        return System.Label.Close_Reason_Missing + ' ' + Label.Generic_Save_Error;
+    }
 }`),
 
   cls('01p000000000009', 'OpportunityCleanupJob', `

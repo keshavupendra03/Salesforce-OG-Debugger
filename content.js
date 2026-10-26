@@ -142,14 +142,14 @@
     panel.append(note);
   }
 
-  function toggle(force) {
+  function toggle(force, { keepFocus = false } = {}) {
     open = force ?? !open;
     if (open) checkFrame();
     panel.classList.toggle('open', open);
     handle.classList.toggle('open', open);
     handle.setAttribute('aria-expanded', String(open));
     handle.setAttribute('aria-label', open ? 'Close OG Debugger' : 'Open OG Debugger');
-    if (open) { post({ type: 'url', url: location.href, apiNames: API.on }); post({ type: 'opened' }); frame?.focus(); } else handle.focus({ preventScroll: true });
+    if (open) { post({ type: 'url', url: location.href, apiNames: API.on }); post({ type: 'opened' }); frame?.focus(); } else if (!keepFocus) handle.focus({ preventScroll: true });
   }
 
   // click toggles; a drag moves the handle up or down the edge
@@ -178,6 +178,16 @@
   });
   handle.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && open) toggle(false); });
+  // a click on the Salesforce page (outside the panel and its handle) closes the panel. Clicks inside the
+  // panel happen in its frame and never reach this page; the handle sits in our shadow root (the host).
+  // Copying a field's API-name tag on the page keeps the panel open: that's work done together with it.
+  document.addEventListener('pointerdown', (e) => {
+    if (!open || e.button !== 0) return;
+    const path = e.composedPath();
+    if (path.includes(host)) return;
+    if (path.some((n) => n.classList?.contains?.(TAG))) return;
+    toggle(false, { keepFocus: true }); // focus goes where you clicked, not back to the handle
+  }, true);
 
   // ---------- "Show field API names": a copyable API-name tag under every field label on the page ----------
   // Lightning marks record-layout fields with data-target-selection-name="sfdc:RecordField.<Object>.<Field>",

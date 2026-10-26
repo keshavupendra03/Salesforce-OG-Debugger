@@ -116,7 +116,7 @@ export function enableFolding(pre, regions) {
 
 // ---------- the same text, everywhere in the file ----------
 
-function rangeAt(el, start, len) {
+export function rangeAt(el, start, len) {
   const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const r = document.createRange();
   let pos = 0;
@@ -135,17 +135,23 @@ function rangeAt(el, start, len) {
  * getRoot() → the element holding the rows (re-read each time: views are re-rendered); ignoreCase() for Apex.
  * onCount(n) gets the number of occurrences (0 when nothing is selected).
  */
+let sameOwner = null; // the highlighter whose ranges are showing
+
 export function selectionHighlighter({ getRoot, ignoreCase = () => false, onCount = () => {} }) {
   const reg = globalThis.CSS?.highlights;
   if (!reg || typeof Highlight === 'undefined') return;
   let t = 0;
+  const me = {};
   const run = () => {
     const root = getRoot();
     const sel = document.getSelection();
     const raw = sel && !sel.isCollapsed ? sel.toString() : '';
     const text = raw.replace(/\r/g, '');
-    reg.delete('og-same');
+    // several views highlight (OG Explorer, FBI Search): each only clears what it set itself
+    if (sameOwner === me) { reg.delete('og-same'); sameOwner = null; }
     if (!root?.isConnected || !text.trim() || text.length < 2 || text.length > 300 || text.includes('\n') || !root.contains(sel.anchorNode)) { onCount(0); return; }
+    reg.delete('og-same');
+    sameOwner = me;
     const ic = ignoreCase();
     const needle = ic ? text.toLowerCase() : text;
     const ranges = [];
@@ -256,12 +262,14 @@ export function stickyScroll(scroller, pre, regions, { max = 5, onPick } = {}) {
     const key = pick.map((r) => r.s).join(',');
     if (key !== shown) { inner.replaceChildren(...pick.map((r) => clone(r.s))); shown = key; picked = pick; }
     let off = 0;
+    let bottom = 0; // the lowest pinned line still showing (a line sliding away goes under the one above)
     [...inner.children].forEach((row, i) => {
       off = Math.min(off, top(pick[i].e) - (y0 + (i + 1) * lh));
       row.style.transform = off ? `translateY(${off}px)` : '';
       row.style.zIndex = String(max - i);
+      bottom = Math.max(bottom, (i + 1) * lh + off);
     });
-    inner.style.height = `${Math.max(0, pick.length * lh + off)}px`;
+    inner.style.height = `${Math.max(0, bottom)}px`;
     inner.style.width = `${pre.scrollWidth}px`;
     box.classList.toggle('on', pick.length > 0);
   }
@@ -278,6 +286,7 @@ export function stickyScroll(scroller, pre, regions, { max = 5, onPick } = {}) {
   scroller.addEventListener('scroll', update, { passive: true });
   pre.addEventListener('og-fold', () => { visible = null; update(); });
   new MutationObserver(() => { visible = null; update(); }).observe(pre, { childList: true });
-  new ResizeObserver(() => { visible = null; update(); }).observe(scroller);
+  // next frame: updating inside the callback resizes the pinned lines, which would loop the observer
+  new ResizeObserver(() => { visible = null; requestAnimationFrame(update); }).observe(scroller);
   return { update, setEnabled(on) { enabled = on; update(); }, el: inner, get lines() { return picked.map((r) => r.s); } };
 }

@@ -61,7 +61,9 @@ export function tokenize(text) {
       }
       const v = text.slice(s, i);
       const up = v.toUpperCase();
-      const t = KW.has(up) ? 'kw'
+      // right after FROM it's always an object, even one named like a keyword (Order, Group)
+      const afterFrom = prevSolidToken(out)?.t === 'kw' && prevSolidToken(out).v.toUpperCase() === 'FROM';
+      const t = KW.has(up) && !afterFrom ? 'kw'
         : DATE_RE.test(v) ? 'date'
           : text[i] === '(' && FUNCTIONS.some((f) => f.toUpperCase() === up) ? 'fn' : 'id';
       out.push({ t, v, s });
@@ -78,8 +80,12 @@ export function tokenize(text) {
 }
 
 function prevSolid(tokens) {
-  for (let k = tokens.length - 1; k >= 0; k--) if (tokens[k].t !== 'ws') return tokens[k].v;
-  return '';
+  return prevSolidToken(tokens)?.v || '';
+}
+
+function prevSolidToken(tokens) {
+  for (let k = tokens.length - 1; k >= 0; k--) if (tokens[k].t !== 'ws' && tokens[k].t !== 'comment') return tokens[k];
+  return null;
 }
 
 const escHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

@@ -34,6 +34,9 @@ export function highlight(line, inBlock, cols, links, st) {
   // space separates them. `Type name` and `List<X> name` declare `name`.
   let prev = null;
   let spaced = false;
+  // `Label.Name` / `System.Label.Name`: the name after `Label.` is a custom label (hover shows its value)
+  let lastWord = null;
+  let labelNext = false;
   const re = /(\/\/.*$)|(\/\*)|('(?:\\.|[^'\\])*'?)|(@[A-Za-z_]\w*)|([A-Za-z_]\w*)|([^A-Za-z_'@/]+|\/)/g;
   re.lastIndex = i;
   let mt;
@@ -62,10 +65,13 @@ export function highlight(line, inBlock, cols, links, st) {
               : /^[A-Z]/.test(word) ? 'tk-type' : '';
         tok = cls ? `<span class="${cls}">${esc(word)}</span>` : esc(word);
       }
+      if (labelNext) tok = `<span class="tk-label" data-label="${esc(word)}">${tok}</span>`;
       const link = links?.get(mt.index);
       out += link != null ? `<span class="tk-link" data-link="${link}">${tok}</span>` : tok;
       prev = KW.has(lw) ? 'kw' : 'id';
       spaced = false;
+      labelNext = false;
+      lastWord = lw;
     } else {
       const chunk = mt[0];
       out += chunk.replace(/(\d+(?:\.\d+)?[lLdD]?)|([()[\]{}])|([^\d()[\]{}]+)/g, (m, num, br, rest) => {
@@ -86,6 +92,8 @@ export function highlight(line, inBlock, cols, links, st) {
         prev = last === '>' ? (chunk[0] === ' ' ? 'gt' : '>') : last;
       }
       spaced = /\s$/.test(chunk);
+      labelNext = lastWord === 'label' && chunk.trim() === '.';
+      lastWord = null;
     }
     if (mt[0] === '') re.lastIndex++;
   }

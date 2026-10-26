@@ -1,5 +1,5 @@
 import { parseUnit, implementsOf } from './apex/parser.js';
-import { apexLinks, apexHandlers, wireLinks } from './explorer/code-links.js';
+import { apexLinks, apexHandlers, wireLinks, componentLinks } from './explorer/code-links.js';
 import { CodeIndex, ROOT_ENTRY_KINDS } from './apex/analyzer.js';
 import { getSession } from './session.js';
 import { SfApi } from './sf-api.js';
@@ -17,6 +17,7 @@ import { setupFun } from './fun.js';
 import { ApexVersions } from './logs/apex-versions.js';
 import { triggerFacts, handlerMatch, buildDispatchMap, dispatchMetadataTypes } from './apex/dispatch.js';
 import { fieldUsages, methodUsages, USAGE_LABEL } from './usage/usage.js';
+import { installLabelHover, resetLabels } from './explorer/labels.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -97,6 +98,8 @@ async function init() {
   setupCoffee($('.credits-links'));
   setupFeedback($('.credits-links'));
   setupFun($('.topbar'));
+  // hover a custom label in any code view to see its value (read once, on the first hover)
+  installLabelHover(async () => (await searchSources()).load('label'));
   setupTabScroller($('.views'));
   bindUi();
   setupSplitters();
@@ -190,13 +193,21 @@ function setupTabScroller(nav) {
     e.preventDefault();
     nav.scrollLeft += e.deltaY;
   }, { passive: false });
-  new ResizeObserver(update).observe(nav);
+  new ResizeObserver(() => requestAnimationFrame(update)).observe(nav); // next frame: showing the arrows resizes the bar
   update();
 }
 
 async function switchView(view) {
   if (state.appView === view) return;
   state.appView = view;
+  // the address follows the tab you're on, so a refresh (or a copied link) comes back to it, not to the
+  // tool the OG panel first opened
+  try {
+    const u = new URL(location.href);
+    if (view === 'flow') u.searchParams.delete('view');
+    else u.searchParams.set('view', view);
+    if (u.href !== location.href) history.replaceState(history.state, '', u);
+  } catch { /* the address can't be changed here: nothing lost */ }
   for (const b of document.querySelectorAll('.views button')) b.setAttribute('aria-selected', String(b.dataset.appView === view));
   document.querySelector(`.views button[data-app-view="${view}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
   $('#view-flow').hidden = view !== 'flow';
@@ -326,7 +337,33 @@ async function searchSources() {
 
 async function loadSearchView() {
   const { mountSearch } = await import('./search/search-ui.js');
-  return mountSearch($('#view-search'), await searchSources());
+  return mountSearch($('#view-search'), await searchSources(), searchCodeSupport());
+}
+
+// what FBI Search's code preview needs to work like OG Explorer: the parsed Apex, its links, and where a click goes
+function searchCodeSupport() {
+  const byId = new WeakMap();
+  const methodBy = (cls, name) => {
+    const t = (state.index?.typesByShortName.get(String(cls).toLowerCase()) || []).find((x) => !x.outer);
+    return (t && (t.methodsByName.get(String(name).toLowerCase()) || [])[0]?.id) || null;
+  };
+  const typeBy = (name) => ((state.index?.typesByShortName.get(String(name).toLowerCase()) || []).find((x) => !x.outer && x.kind !== 'trigger')?.key) || null;
+  return {
+    ready: () => state.indexPromise,
+    apexFile: (doc) => {
+      const idx = state.index;
+      if (!idx) return null;
+      if (!byId.has(idx)) byId.set(idx, new Map(idx.files.map((f) => [f.unit.id, f])));
+      return byId.get(idx).get(doc.id) || null;
+    },
+    apexLinks: (file) => linksFor(file),
+    componentLinks: (bundle, has) => (state.index ? componentLinks(bundle, { method: methodBy, type: typeBy, doc: has }) : []),
+    handlers: () => {
+      const base = codeLinkHandlers();
+      return { ...base, describe: (t) => (t.type === 'doc' ? null : base.describe(t)), peek: (t) => (t.type === 'doc' ? null : base.peek(t)) };
+    },
+    openInExplorer: (target) => openInExplorer(target, { newTab: true }),
+  };
 }
 
 async function loadDataView() {
@@ -355,6 +392,10 @@ async function loadLogsView() {
     setupUrl,
     // the Code Flow scan of the org's Apex, used by Field Trace
     getIndex: () => state.indexPromise,
+    // Execution Path → Entry paths: Code Flow's entry paths of a step's method
+    entryPaths: logEntryPaths,
+    // the code panels' "Open in OG Explorer": the class / trigger in a new Explorer tab, at that line
+    openInExplorer: (unit, line) => openInExplorer({ type: 'doc', key: `${unit.kind === 'trigger' ? 'trigger' : 'class'}:${unit.name.toLowerCase()}`, line }, { newTab: true }),
     listObjects: async () => (state.mode === 'demo' ? DEMO_OBJECTS : state.objects.length ? state.objects : state.api.listObjects()),
     listFields: async (name) => (state.mode === 'demo' ? DEMO_FIELDS[name] || [] : state.api.listFields(name)),
   });
@@ -384,6 +425,7 @@ async function rescanApex() {
     await new Promise((r) => setTimeout(r, 500));
     return { changed: [], added: [], removed: [] };
   }
+  resetLabels(); // label values may have changed too
   try { await state.indexPromise; } catch { /* a failed scan is retried below */ }
   const before = new Map((state.index?.files || []).map(({ unit }) => [unit.id, unit]));
   for (const { unit } of state.index?.files || []) apexVersions.note(unit);
@@ -517,7 +559,7 @@ function bindUi() {
   for (const b of document.querySelectorAll('.views button')) {
     b.addEventListener('click', () => switchView(b.dataset.appView));
   }
-  $('#rescan').addEventListener('click', () => { state.indexPromise = scanOrg(); });
+  $('#rescan').addEventListener('click', () => { resetLabels(); state.indexPromise = scanOrg(); });
   $('#clear-cache').addEventListener('click', async () => {
     await clearCache(state.session.orgId);
     state.indexPromise = scanOrg();
@@ -1210,8 +1252,10 @@ async function loadDispatchMap(units) {
   if (state.appView === 'flow' && (state.field || state.methodId)) rerender();
 }
 
-function renderPaths(paths, rootInfo, truncated) {
+// o: { onStep(key, id, info), heading(count), footer } for other screens (Debug Logs); Code Flow's by default
+function renderPaths(paths, rootInfo, truncated, o = {}) {
   const wrap = h('div', { class: 'paths' });
+  const onStep = o.onStep || selectNode;
   const ordered = orderPaths(paths);
   wrap.append(h('div', { class: 'paths-tools' },
     h('span', {}, (() => {
@@ -1221,7 +1265,7 @@ function renderPaths(paths, rootInfo, truncated) {
     })()),
     h('button', {
       class: 'ghost small path-copy-all', title: 'Copy every path as plain text, ready to paste into Teams, an email or ChatGPT',
-      onclick: (e) => copyPaths(e.currentTarget, allPathsText(ordered, rootInfo, truncated), 'Copied all paths'),
+      onclick: (e) => copyPaths(e.currentTarget, allPathsText(ordered, rootInfo, truncated, o), 'Copied all paths'),
     }, h('span', { 'aria-hidden': 'true' }, '⧉'), ' Copy all paths')));
   let group = null;
   let fold = null; // the rows of the collapsed "only if the framework picked this handler" group
@@ -1260,7 +1304,7 @@ function renderPaths(paths, rootInfo, truncated) {
       if (!last) { info = { via: viaFor(id, p.ids[i + 1]), childId: p.ids[i + 1] }; key = `path:${id}>${p.ids[i + 1]}`; }
       else if (rootInfo) { info = { refs: rootInfo.get(id).refs }; key = `ref:${id}`; }
       else { info = { self: true }; key = `self:${id}`; }
-      row.append(h('button', { class: 'step-chip', 'data-key': key, onclick: () => selectNode(key, id, info) }, m.label));
+      row.append(h('button', { class: 'step-chip', 'data-key': key, onclick: () => onStep(key, id, info) }, m.label));
       if (!last || rootInfo) row.append(h('span', { class: 'arrow' }, '→'));
     });
     if (rootInfo && p.ids.length) {
@@ -1270,7 +1314,7 @@ function renderPaths(paths, rootInfo, truncated) {
     if (p.dispatch) row.append(h('span', { class: 'path-why', title: p.dispatch.detail }, p.dispatch.detail));
     row.append(h('button', {
       class: 'path-copy', title: 'Copy this path as plain text', 'aria-label': `Copy path ${n + 1}`,
-      onclick: (e) => copyPaths(e.currentTarget, [pathsHeading(1), '', ...pathText(p, n, ordered.length, rootInfo), '', COPY_FOOTER].join('\n'), 'Copied'),
+      onclick: (e) => copyPaths(e.currentTarget, [(o.heading || pathsHeading)(1), '', ...pathText(p, n, ordered.length, rootInfo), '', o.footer || COPY_FOOTER].join('\n'), 'Copied'),
     }, '⧉'));
     (fold || wrap).append(row);
   });
@@ -1353,10 +1397,10 @@ function pathText(p, n, total, rootInfo) {
   return out;
 }
 
-function allPathsText(all, rootInfo, truncated) {
+function allPathsText(all, rootInfo, truncated, o = {}) {
   const ordered = all.filter((p) => p.end !== 'dispatch');
   const unlikely = all.filter((p) => p.end === 'dispatch');
-  const lines = [pathsHeading(ordered.length)];
+  const lines = [(o.heading || pathsHeading)(ordered.length)];
   let group = null;
   ordered.forEach((p, n) => {
     if (p.end !== group) {
@@ -1373,8 +1417,56 @@ function allPathsText(all, rootInfo, truncated) {
       `  ${names.join(', ')}`);
   }
   if (truncated) lines.push('', 'Only the first 400 paths are listed.');
-  lines.push('', COPY_FOOTER);
+  lines.push('', o.footer || COPY_FOOTER);
   return lines.join('\n');
+}
+
+// src: a step of a debug log, { kind: 'class' | 'trigger', name, qual, method }. The Code Flow scan's methods
+// with that name (every overload: the log doesn't say which one ran).
+function methodIdsOfLogStep(src) {
+  const idx = state.index;
+  if (!idx || !src) return [];
+  if (src.kind === 'trigger') {
+    const m = idx.methods.find((x) => x.kind === 'trigger' && x.file.unit.name.toLowerCase() === String(src.name).toLowerCase());
+    return m ? [m.id] : [];
+  }
+  const qual = String(src.qual || src.name || '').toLowerCase();
+  const short = qual.split('.').pop();
+  const types = (idx.typesByShortName.get(short) || []).filter((t) => t.kind !== 'trigger');
+  const type = types.find((t) => t.display.toLowerCase() === qual) || types[0];
+  if (!type) return [];
+  const name = String(src.method || type.name).toLowerCase();
+  return (type.methodsByName.get(name) || []).map((m) => m.id);
+}
+
+// The entry paths view of Code Flow for one method, for Debug Logs: same cards and copy buttons;
+// clicking a step calls onStep({ kind, name, qual, method, line }) so the log's code panel shows it.
+async function logEntryPaths(src, onStep) {
+  try { await state.indexPromise; } catch { return { error: 'The Apex scan didn’t finish, so the callers aren’t known.' }; }
+  const ids = methodIdsOfLogStep(src);
+  if (!ids.length) return { error: 'This step isn’t in the scanned Apex (managed package, or changed since the scan).' };
+  const { paths, truncated } = classifyPaths(state.index.entryPaths(ids, state.opts));
+  const m = state.index.methodsById.get(ids[0]);
+  const org = state.mode === 'demo' ? 'demo org' : state.session?.apiHost;
+  const heading = (count) => `Who calls ${signatureOf(m)}${ids.length > 1 ? ` (${ids.length} overloads)` : ''}\n${count === 1 ? 'One code path' : `${count} code paths`}, from the entry point down${org ? ` · ${org}` : ''}`;
+  const stepOf = (id, info) => {
+    const x = state.index.methodsById.get(id);
+    const unit = x.file.unit;
+    const line = info?.via?.lines?.length ? Math.min(...info.via.lines) : x.startLine;
+    return unit.kind === 'trigger'
+      ? { kind: 'trigger', name: unit.name, qual: unit.name, line }
+      : { kind: 'class', name: unit.name, qual: x.type.display, method: x.kind === 'constructor' ? x.type.name : x.name, line, label: x.label };
+  };
+  const el = renderPaths(paths, null, truncated, {
+    heading,
+    footer: '(Copied from Salesforce OG Debugger · Debug Logs)',
+    onStep: (key, id, info) => {
+      for (const c of el.querySelectorAll('.step-chip.selected')) c.classList.remove('selected');
+      for (const c of el.querySelectorAll(`[data-key="${CSS.escape(key)}"]`)) c.classList.add('selected');
+      onStep(stepOf(id, info));
+    },
+  });
+  return { el, count: paths.filter((p) => p.end !== 'dispatch').length, label: m.label, overloads: ids.length };
 }
 
 async function copyPaths(btn, text, done) {
@@ -1520,6 +1612,14 @@ async function copyCode(btn, text) {
   setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = was; }, 1400);
 }
 
+// the class in OG Explorer, at this method (with back / forward, outline, links, the code looks…)
+function explorerButton(m, before) {
+  return h('button', {
+    class: 'link code-explorer', title: `Open ${m.file.unit.name} in OG Explorer, at ${m.name}`,
+    onclick: () => { before?.(); openInExplorer({ type: 'method', id: m.id }, { newTab: true }); },
+  }, 'Open in OG Explorer');
+}
+
 function showCode(id, info) {
   if (info?.usage) { showUsage(info.usage); return; }
   state.codeShown = { id, info };
@@ -1538,6 +1638,7 @@ function showCode(id, info) {
       entryBadge(m.entry),
       sc.canWhole ? h('button', { class: 'link', onclick: toggle }, sc.whole ? 'Method only' : 'Whole class') : null,
       copyButton(sc),
+      explorerButton(m),
       url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null),
     marks.items.length ? codeDetails(refsList(marks.items, scrollToLine), codeSummary(info, marks.items.length)) : null);
   const scroller = h('div', { class: 'code-scroll' }, sourcePre(sc.lines, sc.range, marks, sc.whole ? sc.method : null, m.file));
@@ -1568,6 +1669,7 @@ function openCodeFocus(id, info) {
     tools.replaceChildren(...[srcSub, // (filter: replaceChildren would print a null as "null")
       sc.canWhole ? h('button', { class: 'link', onclick: () => { state.codeWhole = !state.codeWhole; drawSource(); if (state.codeShown) showCode(state.codeShown.id, state.codeShown.info); } }, sc.whole ? 'Method only' : 'Whole class') : null,
       copyButton(sc),
+      explorerButton(m, () => close()),
       url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, 'Open in Setup ↗') : null].filter(Boolean));
     scroller = h('div', { class: 'code-scroll fx-src' }, sourcePre(sc.lines, sc.range, marks, sc.whole ? sc.method : null, m.file));
     srcBody.replaceChildren(scroller);

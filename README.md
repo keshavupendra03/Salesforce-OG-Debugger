@@ -95,9 +95,21 @@ Switch to **Debug Logs** in the top bar (demo: `app.html?demo=1&view=logs`).
   An existing `USER_DEBUG` trace flag for that user is updated instead of duplicated (Salesforce allows one).
 - **Active trace flags** show time left, with Edit / Stop.
 - **Logs** refresh live every 5 s; filter by text, user or errors; ↑/↓ steps through logs; delete one, filtered or all.
+  **⤢** opens the list in a big window (one row per log, filters on one line). It's the same list, so filters,
+  List / Sessions, ticked logs and Live carry over. Opening a log closes the window; ↑/↓ browse without closing;
+  Esc, a click outside or **⤡** puts the list back in the sidebar.
 - **Execution Path:** every failure as a path from the entry point (LWC, trigger, batch, …) through DML,
   triggers and methods down to the line that threw, with root-cause / uncaught tags and the stack trace; plus a
   call tree of the whole request. Clicking a step opens its Apex method with the call / throw lines highlighted.
+  **⧉** copies one error path as plain text, **Copy all paths** copies them all.
+  Every Apex code panel (Execution Path, Field Trace, and the ⤢ expanded view) has **Copy method**, **Copy class**
+  (**Copy trigger**) and **Open in OG Explorer**, which opens the class in a new Explorer tab at that method.
+  **Entry paths** (third mode) shows Code Flow's entry paths for any method that ran in the log: every way the
+  code can reach it, not only the way it ran this time. It starts on the step you selected (or where it failed);
+  **Who calls** is a search box: type any words of a method or trigger that ran (↑ ↓ Enter). Same cards and copy
+  buttons as Code Flow; a click on a step shows its code on the right and opens the call tree to that step.
+- The **call tree keeps its state** (open branches, selection, scroll) when you switch modes or sub-tabs; it only
+  moves when you pick a step in Entry paths.
   Sources come from the Code Flow scan if available, otherwise from the Tooling API (cached per session).
   Call-site lines come from `METHOD_ENTRY` events, so the debug level needs Apex Code = FINE or finer.
 - **Sessions:** one click in Salesforce often creates several logs (the save, page-refresh reads, queueables,
@@ -208,6 +220,10 @@ Paste an error from a record page, a toast or a debug log and press Enter. It se
 - Results are ranked so the place a message is defined (a validation message, a flow custom error, `addError`) comes
   first; inactive rules and flows are marked and ranked lower. Options: match case, whole word, regex.
 - The preview shows the item with the matches highlighted (↑ ↓ between matches) and opens it in Setup / Flow Builder.
+  **Code results** (Apex, LWC, Aura, Visualforce) open in the OG Explorer viewer: colours, clickable methods (hover,
+  Alt+click peek, click to open in OG Explorer), the code look (OG / Developer Console / VS Code, shared with OG
+  Explorer), sticky scroll, folding, custom-label hovers and selection highlights. **Open in OG Explorer** opens the
+  file at the current match.
 - Sources load only when you search them. Flow versions and rule formulas take one request each, so they're cached on
   disk per org and only changes are fetched next time. **🧹 Free memory** unloads everything when you're done.
 
@@ -292,6 +308,12 @@ src/informant/orgs.js         org families from My Domain hosts, the org/token r
   you're scrolled into stay pinned at the top; each slides away as its block ends. Click a pinned line to go to it.
 - **Layout:** both side panes resize (drag the edge, double-click to reset) and collapse to a slim rail (the file
   list also with Ctrl+B). The sidebar starts with every section folded so you can see what there is to explore.
+- **Custom labels:** hover `System.Label.X` / `Label.X` (Apex), `@salesforce/label/c.X` (LWC), `$Label.c.X` (Aura) or
+  `$Label.X` (Visualforce) to see the label's value, short description and category, with Copy value and Open in
+  Setup. Works in every code view (Explorer, peeks, Code Flow, Debug Logs). Labels are read once, on the first
+  hover, and again after a rescan.
+- Code Flow's code panel (and its expanded view) has **Open in OG Explorer**, next to Open in Setup: the class
+  opens in a new Explorer tab at the method.
 - The **code panels in Code Flow and Debug Logs** have the same links: hover and Alt+click peek in place, a click
   continues in OG Explorer.
 - No extra downloads: Apex from the Code Flow scan, components from the (cached) FBI Search sources. Built for

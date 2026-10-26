@@ -668,6 +668,16 @@ await testAsync('data export: autocomplete follows the clause, relationships and
   assert.ok(labels('SELECT Id, (SELECT La FROM Contacts) FROM Account', 21).includes('LastName'));
   // an object not described yet is requested, not guessed
   assert.deepEqual(SQ.suggest('SELECT Id FROM Lead WHERE ', 26, meta).need, ['Lead']);
+  // objects named like keywords (Order, Group) are objects after FROM; ORDER BY after them is still a keyword
+  for (const obj of ['order', 'Order', 'Group']) {
+    const q = `select id from ${obj} WHERE `;
+    const r = SQ.suggest(q, q.length, meta);
+    assert.deepEqual(r.need, [obj], `${obj}: fields are requested`);
+    assert.ok(!/Add FROM/.test(r.hint || ""), `${obj}: no "Add FROM" hint`);
+    assert.equal(SQ.mainObject(`${q}Status = 'Draft' ORDER BY Id`), obj);
+  }
+  assert.ok(labels('SELECT Id FROM Order ').includes('ORDER BY'));
+  assert.ok(SQ.tokenize('SELECT Id FROM Order ORDER BY Id').filter((t) => t.t === 'kw').map((t) => t.v).join(' ') === 'SELECT FROM ORDER BY');
   // "All fields": the whole list for an empty SELECT, only the missing ones otherwise
   const accFields = cache.get('account').fields.map((f) => f.name);
   const empty = SQ.suggest('SELECT  FROM Account', 7, meta);
@@ -953,6 +963,16 @@ test('code looks: Apex declarations, calls and types; LWC JavaScript and markup 
   assert.match(html[1], /<span class="tk-tag">lightning-button<\/span> <span class="tk-attr">label<\/span>=<span class="tk-str">"Go"<\/span>/);
   assert.match(html[2], /<span class="tk-attr">onclick<\/span>=<span class="tk-expr">\{go\}<\/span><span class="tk-tagp">&gt;/);
   assert.match(html[3], /<span class="tk-com">&lt;!-- x --&gt;<\/span>/);
+});
+
+test('custom labels are marked for hover in Apex, LWC, Aura and Visualforce', () => {
+  const labelsOf = (html) => [...html.matchAll(/data-label="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(labelsOf(highlight("return System.Label.Close_Reason_Missing + ' ' + Label.Generic_Save_Error;", false).html), ['Close_Reason_Missing', 'Generic_Save_Error']);
+  assert.deepEqual(labelsOf(highlight('String s = system . label . My_Label;', false).html), ['My_Label']);
+  assert.deepEqual(labelsOf(highlight('acc.Label = x.Label;', false).html), []); // a field called Label is not a label
+  assert.deepEqual(labelsOf(syntaxLines("import MSG from '@salesforce/label/c.Close_Reason_Missing';", 'js')[0]), ['Close_Reason_Missing']);
+  assert.deepEqual(labelsOf(syntaxLines("import X from '@salesforce/label/acme.Pkg_Label';", 'js')[0]), ['acme__Pkg_Label']);
+  assert.deepEqual(labelsOf(syntaxLines('<ui:outputText value="{!$Label.c.Greeting}"/> {!$Label.VF_Title}', 'markup')[0]), ['Greeting', 'VF_Title']);
 });
 
 console.log(`\n${passed} tests passed`);

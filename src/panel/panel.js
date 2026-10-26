@@ -53,9 +53,17 @@ window.addEventListener('message', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.defaultPrevented) tellPage({ type: 'close' }); });
 
-const openTab = (url) => {
-  if (globalThis.chrome?.tabs?.create) chrome.tabs.create({ url });
-  else window.open(url, '_blank', 'noopener');
+// a tool opens in the tab right after this Salesforce tab (the background knows which tab the panel is in)
+const openTab = async (url) => {
+  if (!globalThis.chrome?.runtime?.sendMessage) { window.open(url, '_blank', 'noopener'); return; }
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'og-open-tab', url });
+    if (r?.ok) return;
+  } catch { /* background asleep or reloading: open it directly below */ }
+  try {
+    const here = await chrome.tabs.getCurrent?.();
+    chrome.tabs.create(here ? { url, index: here.index + 1, openerTabId: here.id } : { url });
+  } catch { window.open(url, '_blank', 'noopener'); }
 };
 
 function toast(msg, kind = 'info') {

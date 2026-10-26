@@ -205,7 +205,18 @@ export function apexHandlers(index, { open, linksOf }) {
 
 let card = null;
 let cardT = 0;
-const hideCard = () => { clearTimeout(cardT); card?.remove(); card = null; };
+let hideT = 0;
+const hideCard = () => { clearTimeout(cardT); clearTimeout(hideT); card?.remove(); card = null; };
+// leaving the name or the card hides it, unless the pointer moved onto the other one (the small gap between
+// them is covered by the delay)
+const hideSoon = (anchor) => {
+  clearTimeout(hideT);
+  hideT = setTimeout(() => { if (!card?.matches(':hover') && !anchor?.matches?.(':hover')) hideCard(); }, 160);
+};
+if (typeof document !== 'undefined') {
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card) hideCard(); });
+  document.addEventListener('scroll', (e) => { if (card && !card.contains(e.target)) hideCard(); }, true);
+}
 let menu = null;
 const closeMenu = () => { menu?.remove(); menu = null; };
 
@@ -221,6 +232,9 @@ function showCard(el, link, handlers) {
       : [h('b', {}, one.title), h('small', {}, one.sub), one.preview?.length ? h('pre', {}, one.preview.join('\n')) : null],
     link.possible ? h('small', { class: 'cl-possible' }, 'Matched by name only: the receiver’s type isn’t known') : null,
     h('small', { class: 'cl-keys' }, 'Click to open · Alt+click to peek here · Ctrl+click in a new tab'));
+  card.anchor = el;
+  card.addEventListener('mouseenter', () => clearTimeout(hideT));
+  card.addEventListener('mouseleave', () => hideSoon(el));
   document.body.append(card);
   const r = el.getBoundingClientRect();
   const w = card.offsetWidth;
@@ -278,9 +292,10 @@ export function wireLinks(container, links, handlers) {
     if (!el) return;
     e.stopPropagation();
     clearTimeout(cardT);
+    if (card && card.anchor === el) { clearTimeout(hideT); return; } // back on the same name: keep its card
     cardT = setTimeout(() => showCard(el, linkOf(el), handlers), 380);
   });
-  container.addEventListener('mouseout', (e) => { if (e.target.closest?.('.tk-link')) { clearTimeout(cardT); setTimeout(() => { if (!card?.matches(':hover')) hideCard(); }, 120); } });
+  container.addEventListener('mouseout', (e) => { const l = e.target.closest?.('.tk-link'); if (l) { clearTimeout(cardT); hideSoon(l); } });
   container.addEventListener('click', (e) => {
     const el = e.target.closest?.('.tk-link');
     if (!el) return;

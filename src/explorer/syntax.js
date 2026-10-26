@@ -161,7 +161,19 @@ function cssLine(line, st) {
   return segs;
 }
 
-function render(line, segs, cols, list) {
+// custom labels: LWC `@salesforce/label/c.Name`, Aura `$Label.c.Name`, Visualforce `$Label.Name`
+const LABEL_RE = { js: /@salesforce\/label\/(\w+)\.(\w+)/g, markup: /\$Label\.(?:(\w+)\.)?(\w+)/g };
+function labelsIn(line, lang) {
+  const re = LABEL_RE[lang];
+  if (!re || !line.includes('abel')) return [];
+  return [...line.matchAll(re)].map((m) => {
+    const name = m[2];
+    const ns = m[1] && m[1] !== 'c' ? m[1] : '';
+    return { col: m.index + m[0].length - name.length, len: name.length, name: ns ? `${ns}__${name}` : name };
+  });
+}
+
+function render(line, segs, cols, list, labs = []) {
   if (!line) return ' ';
   const cls = new Array(line.length).fill('');
   for (const [s, e, c] of segs) for (let k = s; k < e && k < line.length; k++) cls[k] = c;
@@ -170,11 +182,14 @@ function render(line, segs, cols, list) {
     const len = list[id]?.len || 0;
     for (let k = col; k < col + len && k < line.length; k++) if (link[k] < 0) link[k] = id;
   }
+  const lab = new Array(line.length).fill(-1);
+  labs.forEach((x, n) => { for (let k = x.col; k < x.col + x.len && k < line.length; k++) lab[k] = n; });
   let out = '';
   for (let k = 0; k < line.length;) {
     const L = link[k];
+    const B = lab[k];
     let j = k;
-    while (j < line.length && link[j] === L) j++;
+    while (j < line.length && link[j] === L && lab[j] === B) j++;
     let inner = '';
     for (let a = k; a < j;) {
       let b = a;
@@ -183,6 +198,7 @@ function render(line, segs, cols, list) {
       inner += cls[a] ? `<span class="${cls[a]}">${t}</span>` : t;
       a = b;
     }
+    if (B >= 0) inner = `<span class="tk-label" data-label="${esc(labs[B].name)}">${inner}</span>`;
     out += L >= 0 ? `<span class="tk-link" data-link="${L}">${inner}</span>` : inner;
     k = j;
   }
@@ -193,5 +209,5 @@ function render(line, segs, cols, list) {
 export function syntaxLines(text, lang, links) {
   const st = { depth: 0 };
   const fn = lang === 'js' ? jsLine : lang === 'css' ? cssLine : markupLine;
-  return text.split('\n').map((line, i) => render(line, fn(line, st), links?.byLine.get(i + 1), links?.list || []));
+  return text.split('\n').map((line, i) => render(line, fn(line, st), links?.byLine.get(i + 1), links?.list || [], labelsIn(line, lang)));
 }

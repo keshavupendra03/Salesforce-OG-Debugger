@@ -5,6 +5,29 @@
 import { h, esc } from '../dom.js';
 import { resizable } from '../layout.js';
 import { KINDS, trimErrorText, makeMatcher, matchRanges, search, docsBytes } from './search-engine.js';
+import { buildCode, attachSticky, lookMenu, applyLook } from '../explorer/code-view.js';
+import { selectionHighlighter, rangeAt } from '../explorer/code-tools.js';
+
+// code results open in the same viewer as OG Explorer (colours, links, looks, sticky scroll, folding, labels)
+const CODE_KINDS = new Set(['apex', 'trigger', 'lwc', 'aura', 'vf']);
+const AURA_JS = new Set(['controller', 'helper', 'renderer']);
+function langOfDoc(d) {
+  if (d.code === 'apex' || d.kind === 'apex' || d.kind === 'trigger') return 'apex';
+  const sub = String(d.sub || '').toLowerCase();
+  if (/\.css$/.test(sub) || sub === 'style') return 'css';
+  if (d.code === 'js' || /\.(js|ts)$/.test(sub) || (d.kind === 'aura' && AURA_JS.has(sub))) return 'js';
+  return 'markup';
+}
+// where a result lives in OG Explorer
+function explorerTarget(d, line) {
+  const n = d.name.toLowerCase();
+  if (d.kind === 'apex') return { type: 'doc', key: `class:${n}`, line };
+  if (d.kind === 'trigger') return { type: 'doc', key: `trigger:${n}`, line };
+  if (d.kind === 'lwc') return { type: 'doc', key: `lwc:${n}`, fileName: d.sub, line };
+  if (d.kind === 'aura') return { type: 'doc', key: `aura:${n}`, fileName: d.sub, line };
+  if (d.kind === 'vf') return { type: 'doc', key: `${d.sub === 'component' ? 'vfcomp' : 'vfpage'}:${n}`, line };
+  return null;
+}
 
 // what the user picks (a source group can hold several kinds of docs)
 const GROUPS = [
@@ -48,7 +71,8 @@ function marked(m, text, max = 0) {
   return html + esc(s.slice(last));
 }
 
-export function mountSearch(root, sources) {
+/** code (optional): what the code preview needs from the app; see searchCodeSupport in src/app.js. */
+export function mountSearch(root, sources, code = null) {
   const S = {
     q: store.get('ff-sx-q', ''), opts: store.get('ff-sx-opts', { caseSensitive: false, wholeWord: false, regex: false, trim: true }),
     on: new Set(store.get('ff-sx-groups', GROUPS.map((g) => g.key))),
@@ -84,6 +108,13 @@ export function mountSearch(root, sources) {
     handle: h('div'), pane: el.list, host: el.body, cssVar: '--sx-list', edge: 'end',
     min: 300, max: () => el.body.clientWidth - 320, key: 'ff-split-sx', label: 'Resize results and preview',
   }));
+
+  selectionHighlighter({
+    getRoot: () => el.preview.querySelector('.sx-code-scroll'),
+    ignoreCase: () => S.codeLang === 'apex',
+    onCount: (n) => { const c = el.preview.querySelector('.cx-selcount'); if (c) { c.hidden = n < 2; c.textContent = `${n} occurrences`; } },
+  });
+  document.addEventListener('og-codelook', () => { if (S.shown && CODE_KINDS.has(S.shown.doc.kind)) select(S.shown, true); });
 
   function optBtn(k, text, title) {
     return h('button', {
@@ -311,14 +342,19 @@ export function mountSearch(root, sources) {
 
   // ---------- preview ----------
   function previewEmpty() {
+    clearMatches();
     return h('div', { class: 'sx-pv-empty' }, h('span', { 'aria-hidden': 'true' }, '◧'), 'Select a result to see where the text sits');
   }
 
-  function select(x) {
+  function select(x, keepPlace) {
     if (!x) return;
     S.sel = x.doc;
+    S.shown = x;
     for (const r of el.list.querySelectorAll('.sx-row')) r.setAttribute('aria-selected', String(r.dataset.key === `${x.doc.kind}:${x.doc.id}`));
     const d = x.doc;
+    clearMatches();
+    if (CODE_KINDS.has(d.kind) && !d.lines.some((l) => l.label)) { selectCode(x, keepPlace); return; }
+    S.codeLang = null;
     const g = KINDS[d.kind];
     const hitSet = new Set(x.hits.map((hh) => hh.i));
     const labeled = d.lines.some((l) => l.label);
@@ -367,6 +403,106 @@ export function mountSearch(root, sources) {
           d.link ? h('a', { class: 'ghost small sx-open', href: d.link, target: '_blank', rel: 'noopener' }, 'Open in Salesforce ↗') : null)),
       body);
     requestAnimationFrame(() => jump(0));
+  }
+
+  // ---------- code preview (the OG Explorer viewer) ----------
+  const reg = globalThis.CSS?.highlights;
+  function clearMatches() { reg?.delete('og-find'); }
+
+  // an LWC / Aura result is one file of a bundle: links need the whole bundle (an Aura controller="…" sits in the markup)
+  function bundleOf(d) {
+    const kind = d.kind === 'vf' ? (d.sub === 'component' ? 'vfcomp' : 'vfpage') : d.kind;
+    const same = d.kind === 'vf' ? [d] : (S.docs.get(d.kind) || []).filter((o) => o.kind === d.kind && o.name === d.name);
+    const files = (same.length ? same : [d]).map((o) => ({ name: o.sub, text: o.lines.map((l) => l.text).join('\n') }));
+    return { kind, name: d.name, files, fi: Math.max(0, (same.length ? same : [d]).indexOf(d)) };
+  }
+  function has(key) {
+    const [kind, name] = key.split(':');
+    const group = kind === 'vfcomp' || kind === 'vfpage' ? 'vf' : kind;
+    return (S.docs.get(group) || []).some((o) => o.name.toLowerCase() === name);
+  }
+
+  async function selectCode(x, keepPlace) {
+    const d = x.doc;
+    const token = (S.codeToken = {});
+    const lang = langOfDoc(d);
+    S.codeLang = lang;
+    const text = d.lines.map((l) => l.text).join('\n');
+    let file = null;
+    if (lang === 'apex' && code) {
+      try { await code.ready?.(); } catch { /* no scan: plain colours, no links */ }
+      if (token !== S.codeToken) return;
+      file = code.apexFile(d);
+      if (file && file.unit.body.split('\n').length !== d.lines.length) file = null; // changed since: show the text we searched
+    }
+    const handlers = code?.handlers();
+    let links = null;
+    if (file) links = code.apexLinks(file);
+    else if (lang !== 'apex' && code) { const b = bundleOf(d); links = code.componentLinks(b, has)[b.fi] || null; }
+    const prevScroll = keepPlace ? el.preview.querySelector('.sx-code-scroll')?.scrollTop : null;
+    const built = buildCode({ text, lang, file, links, handlers });
+    const scroller = h('div', { class: 'cx-code sx-code-scroll' }, built.pre);
+    const bar = h('div', { class: 'sx-code-bar' });
+    const host = h('div', { class: 'sx-code' }, bar, scroller);
+    applyLook(host);
+
+    // the matching lines and the matched text in them
+    const m = S.matcher;
+    const hitSet = new Set(x.hits.map((hh) => hh.i));
+    const rows = [...built.pre.querySelectorAll(':scope > .row')];
+    const hitRows = rows.filter((r, i) => hitSet.has(i) || (m && m.test(d.lines[i]?.text || '')));
+    for (const r of hitRows) r.classList.add('cx-hit');
+    let cur = 0;
+    const pos = h('span', { class: 'sx-pos' }, hitRows.length ? `1 / ${hitRows.length}` : '');
+    const jump = (k) => {
+      if (!hitRows.length) return;
+      cur = (k + hitRows.length) % hitRows.length;
+      for (const r of hitRows) r.classList.remove('cx-hit-cur');
+      const r = hitRows[cur];
+      built.fold.reveal(+r.dataset.line);
+      r.classList.add('cx-hit-cur');
+      r.scrollIntoView({ block: 'center' });
+      pos.textContent = `${cur + 1} / ${hitRows.length}`;
+    };
+    const markMatches = () => {
+      if (!reg || typeof Highlight === 'undefined' || !m) return;
+      const ranges = [];
+      for (const r of hitRows) {
+        const txt = r.querySelector(':scope > .txt');
+        for (const mr of matchRanges(m, txt.textContent)) { const rg = rangeAt(txt, mr.start, mr.end - mr.start); if (rg) ranges.push(rg); }
+      }
+      if (ranges.length) reg.set('og-find', new Highlight(...ranges));
+    };
+    const g = KINDS[d.kind];
+    const target = code?.openInExplorer ? explorerTarget(d, hitRows[cur] ? +hitRows[cur].dataset.line : 1) : null;
+    el.preview.replaceChildren(
+      h('header', { class: 'sx-pv-head' },
+        h('div', { class: 'sx-pv-title' },
+          h('span', { class: `sx-kind k-${d.kind}`, 'aria-hidden': 'true' }, g.icon),
+          h('div', {},
+            h('div', { class: 'sx-pv-kicker' }, g.label),
+            h('b', { title: d.name }, d.name),
+            h('div', { class: 'sx-pv-sub' }, [d.title && d.title !== d.name ? d.title : null, d.sub].filter(Boolean).join(' · ')))),
+        h('div', { class: 'sx-pv-acts' },
+          ...[target ? h('button', { class: 'ghost small', title: 'Open it in OG Explorer, at this match (back / forward, outline, tabs)', onclick: () => code.openInExplorer({ ...target, line: hitRows[cur] ? +hitRows[cur].dataset.line : 1 }) }, 'Open in OG Explorer') : null,
+          d.link ? h('a', { class: 'ghost small sx-open', href: d.link, target: '_blank', rel: 'noopener' }, 'Open in Salesforce ↗') : null].filter(Boolean))),
+      host);
+    // the code's own toolbar (themed with the code): matches, selection count, folding, the look
+    bar.replaceChildren(...[
+      hitRows.length ? h('span', { class: 'sx-nav' },
+        h('button', { class: 'ghost small', title: 'Previous match', 'aria-label': 'Previous match', disabled: hitRows.length < 2, onclick: () => jump(cur - 1) }, '↑'), pos,
+        h('button', { class: 'ghost small', title: 'Next match', 'aria-label': 'Next match', disabled: hitRows.length < 2, onclick: () => jump(cur + 1) }, '↓')) : null,
+      h('span', { class: 'sx-code-file', title: d.sub || '' }, d.sub && d.kind !== 'apex' && d.kind !== 'trigger' ? d.sub : `${d.name}.${d.kind === 'trigger' ? 'trigger' : 'cls'}`),
+      h('span', { class: 'cx-grow' }),
+      h('span', { class: 'cx-selcount', hidden: true, title: 'Places the selected text appears in this file' }),
+      h('span', { class: 'cx-foldbtns' },
+        h('button', { class: 'ghost small', title: 'Fold all blocks', 'aria-label': 'Fold all', onclick: () => built.fold.foldAll() }, '⊟'),
+        h('button', { class: 'ghost small', title: 'Unfold everything', 'aria-label': 'Unfold all', onclick: () => built.fold.unfoldAll() }, '⊞')),
+      lookMenu(),
+    ].filter(Boolean));
+    attachSticky(scroller, built, { links, handlers });
+    markMatches();
+    requestAnimationFrame(() => { if (prevScroll != null) scroller.scrollTop = prevScroll; else jump(0); });
   }
 
   // ---------- boot ----------

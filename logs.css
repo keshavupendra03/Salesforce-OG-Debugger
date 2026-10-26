@@ -821,3 +821,49 @@ code.soql i { color: var(--c-method); font-style: normal; }
 .lg-mem-nums dt { color: var(--faint); font-size: 11.5px; }
 .lg-mem-nums dd { margin: 0; color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
 .lg-mem-nums small { color: var(--faint); font-weight: 400; font-size: 11px; }
+
+/* ---------- the log list in a big window (⤢ in the Debug logs card) ---------- */
+.lg-pop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 28px; background: color-mix(in srgb, #0b1020 42%, transparent); backdrop-filter: blur(3px); animation: fx-in .16s ease-out; }
+.lg-pop-card.lg-side { width: min(1180px, 100%); height: min(860px, 100%); max-height: none; border: 1px solid var(--line-strong); border-radius: 14px; box-shadow: 0 24px 60px rgba(0, 0, 0, .35); overflow: hidden; animation: lg-pop-in .18s ease-out; }
+@keyframes lg-pop-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+.lg-pop .lg-logs { flex: 1; min-height: 0; border: 0; }
+.lg-pop .lg-card-head { padding: 14px 18px 10px; font-size: 15px; }
+.lg-pop .lg-pop-btn { color: var(--accent); border-color: var(--accent); }
+/* filters on one line */
+.lg-pop .lg-filters { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 18px 12px; border-bottom: 1px solid var(--line); }
+.lg-pop .lg-filters > input[type="search"] { flex: 1 1 260px; width: auto; }
+.lg-pop .lg-filters > .lg-row { flex: 0 1 auto; }
+.lg-pop .lg-filters > .lg-scope { flex-basis: 100%; }
+.lg-pop .lg-log-list { padding: 8px 12px 16px; }
+/* each log as one wide row: operation · started · user and size; the error underneath */
+.lg-pop .lg-log { align-items: center; padding: 9px 14px 9px 17px; }
+.lg-pop .lg-log-body { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(190px, 1.1fr) minmax(0, 1.3fr); column-gap: 22px; row-gap: 3px; align-items: center; }
+.lg-pop .lg-log-r1 { font-size: 13px; }
+.lg-pop .lg-log-r2 { font-size: 12px; justify-content: space-between; }
+.lg-pop .lg-log-err { grid-column: 1 / -1; white-space: normal; }
+.lg-pop .lg-log-list:focus-visible { box-shadow: none; }
+
+/* where the list was, while it's in the window */
+.lg-pop-holder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; flex: 1; min-height: 140px; padding: 18px; text-align: center; font-size: 12.5px; color: var(--muted); border-bottom: 0; }
+.lg-pop-holder-ico { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 18px; }
+
+/* Execution Path → Entry paths (Code Flow's path cards) and copying error paths */
+.xp-entry-top { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; }
+.xp-entry-label { flex: none; font-size: 12px; font-weight: 600; color: var(--muted); }
+.xp-entry-pick { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); color: var(--text); font: 12px var(--mono); }
+.xp-entry-body .paths { gap: 6px; }
+.xp-copy-tools { margin: 0 0 8px; }
+.xp-tags .path-copy { position: static; color: var(--muted); border-color: var(--line); background: var(--panel); }
+/* Entry paths: type to find a method that ran */
+.xp-ms { position: relative; flex: 1; min-width: 0; }
+.xp-ms-input { width: 100%; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); font: 12.5px var(--mono); }
+.xp-ms-input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.xp-ms-list { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); max-height: 320px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 9px; box-shadow: 0 12px 30px rgba(15, 23, 42, .18); }
+.xp-ms-item { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 6px; cursor: pointer; font: 12px var(--mono); }
+.xp-ms-item.active { background: var(--accent-soft); }
+.xp-ms-item.sel .xp-ms-name { font-weight: 700; }
+.xp-ms-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xp-ms-name mark { background: color-mix(in srgb, #f59e0b 35%, transparent); color: inherit; border-radius: 2px; }
+.xp-ms-fail { flex: none; font: 700 10px/16px var(--sans); color: #dc2626; }
+.xp-ms-runs { flex: none; font: 11px var(--mono); color: var(--faint); }
+.xp-ms-none { padding: 8px 10px; font-size: 12px; color: var(--muted); }

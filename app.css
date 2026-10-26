@@ -837,3 +837,20 @@ button.chip:hover { color: var(--text); }
 .cl-x:hover { background: var(--panel-2); color: var(--text); }
 .cl-peek-body { max-height: 360px; overflow: auto; background: var(--code-bg); }
 .cl-peek-body .src { padding: 6px 0; }
+
+/* custom labels in code: hover shows the value (src/explorer/labels.js) */
+.tk-label { cursor: help; text-decoration: underline dotted; text-decoration-color: color-mix(in srgb, #0d9488 70%, transparent); text-underline-offset: 3px; text-decoration-thickness: 1.5px; border-radius: 3px; }
+.tk-label:hover { background: color-mix(in srgb, #0d9488 14%, transparent); }
+.lb-card { gap: 7px; width: min(420px, calc(100vw - 16px)); font-family: var(--sans); }
+.lb-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lb-head b { min-width: 0; overflow-wrap: anywhere; }
+.lb-chip { flex: none; padding: 1px 7px; border-radius: 99px; font: 700 10px/16px var(--sans); letter-spacing: .04em; text-transform: uppercase; color: #0f766e; background: color-mix(in srgb, #0d9488 14%, var(--panel)); }
+.lb-value { padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line); border-left: 3px solid #0d9488; background: var(--code-bg); color: var(--text); font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow-y: auto; }
+.lb-value.empty { color: var(--faint); font-style: italic; }
+.lb-meta { color: var(--faint) !important; }
+.lb-actions { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+.lb-setup { font-size: 12px; }
+.lb-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.lb-err { color: var(--bad, #dc2626) !important; }
+@media (prefers-color-scheme: dark) { .lb-chip { color: #5eead4; } }
+.lb-loading .lg-spinner { width: 13px; height: 13px; }

@@ -6,6 +6,7 @@ import { DocStore, DOC_KINDS } from './doc-store.js';
 import { apexLinks, componentLinks, linkify, apexRows, apexHandlers, wireLinks, signature } from './code-links.js';
 import { foldRegions, enableFolding, selectionHighlighter, markIndent, stickyScroll } from './code-tools.js';
 import { syntaxLines } from './syntax.js';
+import { lookMenu, codePrefs, applyLook } from './code-view.js';
 import { resizable, collapsibleSide } from '../layout.js';
 
 const store = {
@@ -13,12 +14,6 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked */ } },
 };
 const RECENT_MAX = 15;
-// how the code looks: our own, Salesforce's Developer Console, or VS Code (dark). Only the editor changes.
-const LOOKS = [
-  { id: 'og', label: 'OG', hint: 'This app’s own look', sw: ['#a626a4', '#50a14f', '#2563eb'] },
-  { id: 'dc', label: 'Developer Console', hint: 'Like the Salesforce Developer Console', sw: ['#7f0f9e', '#c41a16', '#1a3fc7'] },
-  { id: 'vsc', label: 'VS Code', hint: 'Like VS Code’s dark theme', sw: ['#c586c0', '#dcdcaa', '#4ec9b0'], dark: true },
-];
 const SECTIONS = ['class', 'trigger', 'lwc', 'aura', 'vfpage', 'vfcomp'];
 
 function toast(msg, kind = 'info') {
@@ -44,7 +39,7 @@ export function mountExplorer(root, opts) {
   const K = `og-explorer:${opts.orgKey || 'org'}`;
   const saved = store.get(K, {});
   const S = {
-    active: false, docs: null, index: null, q: '', collapsed: new Set(saved.collapsed || ['class', 'trigger', 'lwc', 'aura', 'vfpage', 'vfcomp']),
+    active: false, docs: null, index: null, q: '', qCollapsed: new Set(), collapsed: new Set(saved.collapsed || ['class', 'trigger', 'lwc', 'aura', 'vfpage', 'vfcomp']),
     tabs: [], cur: -1, back: [], fwd: [], recent: saved.recent || [], line: null, find: null, pending: [],
   };
   const el = {};
@@ -56,13 +51,14 @@ export function mountExplorer(root, opts) {
   el.main = h('section', { class: 'cx-main' });
   el.outline = h('aside', { class: 'cx-outline' });
   root.replaceChildren(el.side, el.main, el.outline);
-  const setLook = (id) => {
-    S.look = LOOKS.some((l) => l.id === id) ? id : 'og';
-    for (const l of LOOKS) el.main.classList.toggle(`look-${l.id}`, l.id === S.look);
-    store.set('ff-cx-look', S.look);
-  };
-  setLook(store.get('ff-cx-look', 'og'));
-  S.sticky = store.get('ff-cx-sticky', true);
+  // the code look and sticky scroll are shared with FBI Search (src/explorer/code-view.js)
+  applyLook(el.main);
+  S.sticky = codePrefs.sticky;
+  document.addEventListener('og-codelook', (e) => {
+    applyLook(el.main, e.detail.look);
+    S.sticky = e.detail.sticky;
+    drawMain();
+  });
   // both side panes: drag to resize, collapse to a slim rail (the left one also with Ctrl+B)
   root.append(resizable({
     handle: h('div', { class: 'cx-split-side' }), pane: el.side, host: root, cssVar: '--cx-side', edge: 'end',
@@ -171,7 +167,12 @@ export function mountExplorer(root, opts) {
       const d = ty && S.docs.docOfUnit(ty.file.unit);
       return d ? { key: d.key, file: 0, line: ty.line || 1 } : null;
     }
-    if (t.type === 'doc') return S.docs.get(t.key) ? { key: t.key, file: 0, line: 1 } : null;
+    if (t.type === 'doc') {
+      const d = S.docs.get(t.key);
+      if (!d) return null;
+      const fi = t.fileName ? Math.max(0, d.files.findIndex((f) => f.name === t.fileName || f.name.endsWith(` · ${t.fileName}`))) : 0;
+      return { key: t.key, file: fi, line: t.line || 1 };
+    }
     return null;
   }
 
@@ -239,7 +240,7 @@ export function mountExplorer(root, opts) {
     const match = (d) => !q || d.name.toLowerCase().includes(q);
     const search = h('input', {
       type: 'search', class: 'cx-search', placeholder: 'Filter… (Ctrl+P: go to anything)', value: S.q, spellcheck: 'false', 'aria-label': 'Filter files',
-      oninput: (e) => { S.q = e.target.value; const p = e.target.selectionStart; drawSide(); const s = el.side.querySelector('.cx-search'); s.focus(); s.setSelectionRange(p, p); },
+      oninput: (e) => { S.q = e.target.value; if (!S.q.trim()) S.qCollapsed.clear(); const p = e.target.selectionStart; drawSide(); const s = el.side.querySelector('.cx-search'); s.focus(); s.setSelectionRange(p, p); },
     });
     const cur = S.tabs[S.cur]?.key;
     const item = (d) => h('button', { class: `cx-item k-${d.kind}${d.key === cur ? ' sel' : ''}`, title: d.sub, onclick: (e) => openDoc(d.key, e.ctrlKey || e.metaKey) },
@@ -250,11 +251,14 @@ export function mountExplorer(root, opts) {
       const list = all.filter(match);
       const loading = !S.docs.componentsLoaded && !['class', 'trigger'].includes(kind);
       if (!loading && !all.length) return null;
-      const closed = S.collapsed.has(kind) && !q;
+      // filtering opens every section so matches show, but you can still fold one away while filtering
+      // (remembered until the filter is cleared; your usual open / closed sections are kept as they were)
+      const folds = q ? S.qCollapsed : S.collapsed;
+      const closed = folds.has(kind);
       return h('section', { class: 'cx-sec' },
         h('button', {
           class: 'cx-sec-head', 'aria-expanded': String(!closed),
-          onclick: () => { if (closed) S.collapsed.delete(kind); else S.collapsed.add(kind); save(); drawSide(); },
+          onclick: () => { if (closed) folds.delete(kind); else folds.add(kind); if (!q) save(); drawSide(); },
         }, h('span', { class: 'cx-chev', 'aria-hidden': 'true' }, '▸'), DOC_KINDS[kind].label,
         h('span', { class: 'cx-n' }, loading ? '…' : q ? `${list.length}/${all.length}` : all.length)),
         closed ? null : loading ? h('p', { class: 'cx-note' }, el.compNote = h('span', {}, 'Reading…')) : h('div', { class: 'cx-items' }, list.slice(0, 400).map(item),
@@ -268,38 +272,6 @@ export function mountExplorer(root, opts) {
   const openDoc = (key, newTab) => open({ type: 'doc', key }, { newTab, preview: !newTab });
 
   // ---------- main: tabs, toolbar, code ----------
-  // the look menu (top right of the editor): OG / Developer Console / VS Code, and sticky scroll
-  function lookMenu() {
-    const cur = LOOKS.find((l) => l.id === S.look);
-    const sw = (l) => h('span', { class: `cx-look-sw${l.dark ? ' dark' : ''}`, 'aria-hidden': 'true' }, l.sw.map((c) => h('i', { style: `background:${c}` })));
-    const btn = h('button', { class: 'cx-look-btn', 'aria-haspopup': 'menu', title: 'How the code looks', onclick: (e) => { e.stopPropagation(); toggle(); } },
-      sw(cur), h('span', {}, cur.label), h('span', { class: 'cx-look-caret', 'aria-hidden': 'true' }, '▾'));
-    let menu = null;
-    const close = () => { menu?.remove(); menu = null; document.removeEventListener('mousedown', outside, true); document.removeEventListener('keydown', esc, true); };
-    const outside = (e) => { if (!menu?.contains(e.target) && !btn.contains(e.target)) close(); };
-    const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); btn.focus(); } };
-    function toggle() {
-      if (menu) { close(); return; }
-      menu = h('div', { class: 'cx-look-menu', role: 'menu' },
-        h('div', { class: 'cx-look-head' }, 'Code look'),
-        LOOKS.map((l) => h('button', {
-          class: `cx-look-item${l.id === S.look ? ' sel' : ''}`, role: 'menuitemradio', 'aria-checked': String(l.id === S.look),
-          onclick: () => { close(); setLook(l.id); drawMain(); },
-        }, sw(l), h('span', { class: 'cx-look-txt' }, h('b', {}, l.label), h('small', {}, l.hint)), l.id === S.look ? h('span', { class: 'cx-look-tick' }, '✓') : null)),
-        h('label', { class: 'cx-look-opt' },
-          h('input', { type: 'checkbox', checked: S.sticky, onchange: (e) => { S.sticky = e.target.checked; store.set('ff-cx-sticky', S.sticky); S.stick?.setEnabled(S.sticky); } }),
-          h('span', {}, h('b', {}, 'Sticky scroll'), h('small', {}, 'Keep the class and method you’re in pinned at the top'))));
-      document.body.append(menu);
-      const r = btn.getBoundingClientRect();
-      menu.style.top = `${r.bottom + 4}px`;
-      menu.style.left = `${Math.max(8, r.right - menu.offsetWidth)}px`;
-      document.addEventListener('mousedown', outside, true);
-      document.addEventListener('keydown', esc, true);
-      menu.querySelector('.cx-look-item.sel')?.focus();
-    }
-    return h('div', { class: 'cx-look' }, btn);
-  }
-
   function drawMain() {
     const tabs = h('nav', { class: 'cx-tabs', role: 'tablist' }, S.tabs.map((t, i) => {
       const d = S.docs?.get(t.key);

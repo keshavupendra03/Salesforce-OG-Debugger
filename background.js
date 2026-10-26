@@ -36,7 +36,16 @@ async function hardReload(tabId, { deep } = {}) {
   return { ok: true, origins: origins.length };
 }
 
+// The OG panel's tools (and the toolbar icon below) open right next to the tab you're on, not at the end
+function openNextTo(tab, url) {
+  return chrome.tabs.create(tab ? { url, index: tab.index + 1, openerTabId: tab.id, windowId: tab.windowId } : { url });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg?.type === 'og-open-tab') {
+    openNextTo(sender.tab, msg.url).then(() => reply({ ok: true }), (e) => reply({ ok: false, error: e?.message || String(e) }));
+    return true;
+  }
   if (msg?.type !== 'og-hard-reload') return false;
   const tabId = sender.tab?.id;
   if (tabId == null) { reply({ ok: false, error: 'No tab to reload.' }); return false; }
@@ -48,5 +57,5 @@ chrome.action.onClicked.addListener((tab) => {
   let host = '';
   try { host = new URL(tab.url).hostname; } catch { /* chrome:// pages etc. */ }
   const url = chrome.runtime.getURL('app.html') + (SF_HOST_RE.test(host) ? `?host=${encodeURIComponent(host)}` : '');
-  chrome.tabs.create({ url, index: tab.index + 1, openerTabId: tab.id });
+  openNextTo(tab, url);
 });
