@@ -939,6 +939,7 @@ export function mountLogs(root, backend, sources = {}) {
     const keep = [];
     for (let n = el.logList; n && n !== document.body; n = n.parentElement) if (n.scrollTop) keep.push([n, n.scrollTop]);
     el.logList.replaceChildren(...(S.sess.on ? visibleSessions().map(sessionRow) : list.map((l) => logRow(l))));
+    if (S.sess.on) { const bar = pickBar(); if (bar) el.logList.append(bar); }
     for (const [n, top] of keep) n.scrollTop = top;
   }
 
@@ -955,7 +956,7 @@ export function mountLogs(root, backend, sources = {}) {
     }) : null;
     if (check) check.checked = included;
     return h('li', {
-      class: `lg-log${err ? ' err' : ''}${S.fresh.has(l.Id) ? ' fresh' : ''}${o.check && !included ? ' excluded' : ''}`,
+      class: `lg-log${err ? ' err' : ''}${S.fresh.has(l.Id) ? ' fresh' : ''}${o.check && !included && !o.lone ? ' excluded' : ''}${o.lone ? ' lone' : ''}`,
       role: 'option', 'aria-selected': String(l.Id === S.selectedId), 'data-id': l.Id,
       onclick: () => openLog(l.Id),
     },
@@ -1006,11 +1007,24 @@ export function mountLogs(root, backend, sources = {}) {
 
   const buildSessions = (logs) => groupSessions(logs, { gapSec: S.sess.gap, users: S.sess.users });
 
+  // Ticked logs from more than one session (or lone logs): open them all as one, in time order
+  function pickBar() {
+    const groups = visibleSessions();
+    const ticked = groups.flatMap((g) => g.logs.filter(isIncluded));
+    const from = groups.filter((g) => g.logs.some(isIncluded)).length;
+    if (from < 2) return null;
+    return h('li', { class: 'lg-pick-bar', role: 'presentation' },
+      h('span', { class: 'lg-pick-txt' }, h('b', {}, `${ticked.length} logs`), ` ticked from ${from} sessions`),
+      h('button', { type: 'button', class: 'ghost small', title: 'Untick everything', onclick: () => { for (const g of groups) for (const l of g.logs) S.sess.pick.set(l.Id, false); renderLogs(); } }, 'Clear'),
+      h('button', { type: 'button', class: 'primary small', title: 'Open every ticked log as one execution, in the order they ran', onclick: () => openSession(ticked.map((l) => l.Id)) }, `Open ${ticked.length} as one`));
+  }
+
   function sessionRow(g) {
     const gid = g.logs[0].Id;
     const latest = S.sess.latest?.id === gid;
     if (g.logs.length === 1) {
-      const row = logRow(g.logs[0]);
+      // a log on its own: tick it to open it together with logs of other sessions
+      const row = logRow(g.logs[0], { check: true, lone: true });
       if (latest) row.querySelector('.lg-log-r1').append(h('span', { class: 'lg-latest' }, 'Latest'));
       return row;
     }

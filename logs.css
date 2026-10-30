@@ -867,3 +867,9 @@ code.soql i { color: var(--c-method); font-style: normal; }
 .xp-ms-fail { flex: none; font: 700 10px/16px var(--sans); color: #dc2626; }
 .xp-ms-runs { flex: none; font: 11px var(--mono); color: var(--faint); }
 .xp-ms-none { padding: 8px 10px; font-size: 12px; color: var(--muted); }
+
+/* Sessions: ticks across sessions (and lone logs) open as one */
+.lg-log.lone > .lg-check { margin-top: 3px; }
+.lg-pick-bar { position: sticky; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 8px; margin: 8px 0 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 10px; background: var(--panel); box-shadow: 0 -6px 16px rgba(15, 23, 42, .1); list-style: none; }
+.lg-pick-txt { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); }
+.lg-pick-txt b { color: var(--text); }

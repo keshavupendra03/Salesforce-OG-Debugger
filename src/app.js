@@ -46,6 +46,8 @@ const state = {
   methodId: null,
   view: 'tree',
   opts: { possible: false, tests: false },
+  // field trace: which paths to show, by what the code does with the field ('all' | 'write' | 'read' | 'outside')
+  access: (() => { try { return localStorage.getItem('ff-cf-access') || 'all'; } catch { return 'all'; } })(),
   selectedKey: null,
   codeWhole: false, // code panel: the whole class instead of just the method
   codeShown: null,
@@ -106,7 +108,7 @@ async function init() {
   renderClasses();
   renderMethods();
   const params = new URLSearchParams(location.search);
-  const startView = ['logs', 'data', 'import', 'search', 'api', 'exec', 'explorer'].includes(params.get('view')) ? params.get('view') : null;
+  const startView = ['logs', 'data', 'import', 'search', 'api', 'exec', 'explorer', 'compare'].includes(params.get('view')) ? params.get('view') : null;
   if (params.has('demo')) {
     if (startView) { state.mode = 'demo'; enableViews(); switchView(startView); }
     return startDemo();
@@ -218,6 +220,7 @@ async function switchView(view) {
   $('#view-exec').hidden = view !== 'exec';
   $('#view-import').hidden = view !== 'import';
   $('#view-explorer').hidden = view !== 'explorer';
+  $('#view-compare').hidden = view !== 'compare';
   $('#rescan').hidden = view !== 'flow' || state.mode !== 'org';
   if (view === 'logs') state.logsView ||= loadLogsView();
   if (view === 'data') state.dataView ||= loadDataView();
@@ -226,6 +229,7 @@ async function switchView(view) {
   if (view === 'exec') state.execView ||= loadExecView();
   if (view === 'import') state.importView ||= loadImportView();
   if (view === 'explorer') state.explorerView ||= loadExplorerView();
+  if (view === 'compare') state.compareView ||= loadCompareView();
   if (state.logsView) (await state.logsView).setActive(state.appView === 'logs');
   if (state.dataView) (await state.dataView).setActive(state.appView === 'data');
   if (state.searchView) (await state.searchView).setActive(state.appView === 'search');
@@ -233,6 +237,18 @@ async function switchView(view) {
   if (state.execView) (await state.execView).setActive(state.appView === 'exec');
   if (state.importView) (await state.importView).setActive(state.appView === 'import');
   if (state.explorerView) (await state.explorerView).setActive(state.appView === 'explorer');
+  if (state.compareView) (await state.compareView).setActive(state.appView === 'compare');
+}
+
+// OG Code Compare: code of any two orgs this browser is logged into (The Informant's org registry)
+async function loadCompareView() {
+  const { mountCompare } = await import('./compare/compare-ui.js');
+  return mountCompare($('#view-compare'), {
+    demo: state.mode === 'demo',
+    currentHost: state.mode === 'demo' ? null : state.session?.apiHost,
+    // only the org this tab is connected to has OG Explorer
+    openInExplorer: (target) => openInExplorer(target, { newTab: true }),
+  });
 }
 
 async function loadExplorerView() {
@@ -323,6 +339,7 @@ function enableViews() {
   $('#nav-exec').disabled = false;
   $('#nav-import').disabled = false;
   $('#nav-explorer').disabled = false;
+  $('#nav-compare').disabled = false;
 }
 
 async function searchSources() {
@@ -763,12 +780,25 @@ function syncFlowTools() {
 function rerender(autoExpand = false) {
   if (state.pick === 'method') return renderMethodFlow(autoExpand);
   if (!state.analysis) return showFlowEmpty();
-  const { roots, hiddenPossible } = rootsFor(state.analysis);
-  const uses = fieldUses();
-  const { paths, truncated } = withUsages(classifyPaths(state.index.entryPaths(roots.map((r) => r.method.id), state.opts)), uses);
-  renderHead(roots, paths, hiddenPossible, uses);
+  const { roots: allRoots, hiddenPossible } = rootsFor(state.analysis);
+  const allUses = fieldUses();
+  // the Writes / Reads / Outside Apex filter: only the paths that end in that kind of use
+  const f = state.access;
+  const roots = f === 'outside' ? [] : f === 'write' ? allRoots.filter((r) => r.write) : f === 'read' ? allRoots.filter((r) => r.read) : allRoots;
+  const uses = f === 'all' || f === 'outside' ? allUses : allUses.filter((u) => u.refs.some((r) => r.access === f));
+  const { paths, truncated } = withUsages(classifyPaths(state.index.entryPaths(roots.map((r) => r.method.id), pathOpts())), uses);
+  renderHead(allRoots, paths, hiddenPossible, allUses);
   const body = $('#flow-body');
   body.replaceChildren();
+  if (f !== 'all' && !roots.length && !uses.length && (allRoots.length || allUses.length)) {
+    const what = { write: 'writes', read: 'reads', outside: 'uses' }[f];
+    body.append(h('div', { class: 'empty' },
+      h('p', { class: 'empty-title' }, f === 'outside' ? 'Nothing outside Apex uses this field' : `No code ${what} this field`),
+      h('p', { class: 'empty-sub' }, f === 'outside' && state.usage?.status !== 'ready' ? 'Still looking in Flows, validation rules, formulas, LWC, Aura and Visualforce…' : 'Other code uses it in other ways.'),
+      h('button', { class: 'ghost small', onclick: () => setAccess('all') }, 'Show all paths')));
+    showCodeEmpty();
+    return;
+  }
   if (!roots.length && !uses.length) {
     body.append(...[h('div', { class: 'empty' },
       h('p', { class: 'empty-title' }, state.usage?.status === 'ready' ? 'Not used anywhere we can see' : 'No Apex references found'),
@@ -797,7 +827,7 @@ function renderMethodFlow(autoExpand) {
   const m = state.methodId && state.index?.methodsById.get(state.methodId);
   if (!m) return showFlowEmpty();
   loadUsage();
-  const { paths, truncated } = withUsages(classifyPaths(state.index.entryPaths([m.id], state.opts)));
+  const { paths, truncated } = withUsages(classifyPaths(state.index.entryPaths([m.id], pathOpts())));
   renderMethodHead(m, paths);
   const body = $('#flow-body');
   body.replaceChildren(...[usageNote()].filter(Boolean));
@@ -847,6 +877,19 @@ function renderHead(roots, paths, hiddenPossible, uses = []) {
   const readers = roots.filter((r) => r.read && !r.write).length;
   const entries = new Set(paths.filter((p) => p.end === 'entry').map(entryKey));
   const chips = $('#chips');
+  // Show: All · Writes · Reads · Outside Apex (filters the call tree and the entry paths)
+  const readersAll = roots.filter((r) => r.read).length;
+  const outside = state.usage?.status === 'ready' ? uses.length : null;
+  const opt = (k, label, n, title) => h('button', {
+    type: 'button', role: 'radio', class: `af-opt k-${k}`, 'aria-checked': String(state.access === k), title,
+    onclick: () => setAccess(k),
+  }, label, n != null ? h('span', { class: 'af-n' }, n) : null);
+  const filter = h('div', { class: 'access-filter', role: 'radiogroup', 'aria-label': 'Show paths to code that' },
+    h('span', { class: 'af-label' }, 'Show'),
+    opt('all', 'All', null, 'Every path, whatever the code does with the field'),
+    opt('write', 'Writes', writers, 'Only paths to code that writes (sets) the field'),
+    opt('read', 'Reads', readersAll, 'Only paths to code that reads the field (in SOQL or in code), including code that also writes it'),
+    opt('outside', 'Outside Apex', outside, 'Only Flows, Process Builder, validation rules, formulas, LWC, Aura and Visualforce'));
   chips.replaceChildren(
     h('span', { class: 'chip write' }, h('b', {}, writers), writers === 1 ? 'method writes' : 'methods write'),
     h('span', { class: 'chip read' }, h('b', {}, readers), readers === 1 ? 'method only reads' : 'methods only read'),
@@ -854,6 +897,7 @@ function renderHead(roots, paths, hiddenPossible, uses = []) {
       ? h('span', { class: 'chip outside', title: 'Flows, Process Builder, validation rules, formula fields, LWC, Aura and Visualforce' }, h('b', {}, uses.length), uses.length === 1 ? 'use outside Apex' : 'uses outside Apex')
       : h('span', { class: 'chip outside', title: 'Reading Flows, validation rules, formula fields, LWC, Aura and Visualforce' }, 'checking outside Apex…'),
     h('span', { class: 'chip entries' }, h('b', {}, entries.size), entries.size === 1 ? 'entry point' : 'entry points'),
+    filter,
   );
   if (hiddenPossible) {
     chips.append(h('button', {
@@ -863,6 +907,12 @@ function renderHead(roots, paths, hiddenPossible, uses = []) {
     }, `+ ${plural(hiddenPossible, 'possible match')}`));
   }
   syncFlowTools();
+}
+
+function setAccess(k) {
+  state.access = k;
+  try { localStorage.setItem('ff-cf-access', k); } catch { /* storage blocked */ }
+  rerender();
 }
 
 // ---------- badges ----------
@@ -1217,19 +1267,21 @@ function factsOf(trigger) {
   if (!facts.has(trigger.id)) facts.set(trigger.id, triggerFacts(trigger, state.index));
   return facts.get(trigger.id);
 }
-function classifyPaths(result) {
+function classifyPath(p) {
   const M = (id) => state.index.methodsById.get(id);
-  const paths = result.paths.map((p) => {
-    if (p.end !== 'entry' || M(p.ids[0]).kind !== 'trigger') return p;
-    const hop = p.ids.findIndex((id, i) => i < p.ids.length - 1 && viaFor(id, p.ids[i + 1]).kinds?.has('dispatch'));
-    if (hop < 0) return p;
-    const trigger = M(p.ids[0]);
-    const handler = M(p.ids[hop + 1]).type;
-    const r = handlerMatch(factsOf(trigger), handler, state.index, state.dispatchMap);
-    return r.ok ? p : { ...p, end: 'dispatch', dispatch: { ...r, handler: handler.display, via: M(p.ids[hop]).label } };
-  });
-  return { ...result, paths };
+  if (p.end !== 'entry' || M(p.ids[0]).kind !== 'trigger') return p;
+  const hop = p.ids.findIndex((id, i) => i < p.ids.length - 1 && viaFor(id, p.ids[i + 1]).kinds?.has('dispatch'));
+  if (hop < 0) return p;
+  const trigger = M(p.ids[0]);
+  const handler = M(p.ids[hop + 1]).type;
+  const r = handlerMatch(factsOf(trigger), handler, state.index, state.dispatchMap);
+  return r.ok ? p : { ...p, end: 'dispatch', dispatch: { ...r, handler: handler.display, via: M(p.ids[hop]).label } };
 }
+function classifyPaths(result) {
+  return { ...result, paths: result.paths.map(classifyPath) };
+}
+// the entry-path search options: a path a trigger framework can't take doesn't use up the path budget
+const pathOpts = () => ({ ...state.opts, isUnlikely: (ids) => classifyPath({ ids, end: 'entry' }).end === 'dispatch' });
 
 // custom metadata that trigger dispatchers read handler class names from (e.g. TriggerSettings__mdt)
 async function loadDispatchMap(units) {
@@ -1261,7 +1313,7 @@ function renderPaths(paths, rootInfo, truncated, o = {}) {
     h('span', {}, (() => {
       const real = ordered.filter((p) => p.end !== 'dispatch').length;
       const unlikely = ordered.length - real;
-      return `${real} path${real === 1 ? '' : 's'}${unlikely ? ` · ${unlikely} unlikely (trigger framework)` : ''}${truncated ? ' · the first 400' : ''}`;
+      return `${real} path${real === 1 ? '' : 's'}${unlikely ? ` · ${unlikely} unlikely (trigger framework)` : ''}${truncated ? ' · not all listed' : ''}`;
     })()),
     h('button', {
       class: 'ghost small path-copy-all', title: 'Copy every path as plain text, ready to paste into Teams, an email or ChatGPT',
@@ -1318,7 +1370,7 @@ function renderPaths(paths, rootInfo, truncated, o = {}) {
     }, '⧉'));
     (fold || wrap).append(row);
   });
-  if (truncated) wrap.append(h('p', { class: 'paths-note' }, 'Showing the first 400 paths. Use the call tree to explore the rest.'));
+  if (truncated) wrap.append(h('p', { class: 'paths-note' }, 'Some methods are reached by more paths than are listed here. Use the call tree to explore the rest.'));
   return wrap;
 }
 
@@ -1357,7 +1409,7 @@ const lineList = (lines) => {
 function pathsHeading(count) {
   const target = state.pick === 'method' && state.methodId
     ? `Who calls ${signatureOf(state.index.methodsById.get(state.methodId))}`
-    : `How Apex reaches ${state.object}.${state.field?.name}`;
+    : `How Apex reaches ${state.object}.${state.field?.name}${{ write: " (only code that writes it)", read: " (only code that reads it)", outside: " (only uses outside Apex)" }[state.access] || ""}`;
   const org = state.mode === 'demo' ? 'demo org' : state.session?.apiHost;
   return `${target}\n${count === 1 ? 'One code path' : `${count} code paths`}, from the entry point down${org ? ` · ${org}` : ''}`;
 }
@@ -1416,7 +1468,7 @@ function allPathsText(all, rootInfo, truncated, o = {}) {
       `These triggers reach it only through ${d.via}, which picks the handler at run time; they use other handlers:`,
       `  ${names.join(', ')}`);
   }
-  if (truncated) lines.push('', 'Only the first 400 paths are listed.');
+  if (truncated) lines.push('', 'Not every path is listed: some methods are reached by more paths than this.');
   lines.push('', o.footer || COPY_FOOTER);
   return lines.join('\n');
 }
@@ -1445,7 +1497,7 @@ async function logEntryPaths(src, onStep) {
   try { await state.indexPromise; } catch { return { error: 'The Apex scan didn’t finish, so the callers aren’t known.' }; }
   const ids = methodIdsOfLogStep(src);
   if (!ids.length) return { error: 'This step isn’t in the scanned Apex (managed package, or changed since the scan).' };
-  const { paths, truncated } = classifyPaths(state.index.entryPaths(ids, state.opts));
+  const { paths, truncated } = classifyPaths(state.index.entryPaths(ids, pathOpts()));
   const m = state.index.methodsById.get(ids[0]);
   const org = state.mode === 'demo' ? 'demo org' : state.session?.apiHost;
   const heading = (count) => `Who calls ${signatureOf(m)}${ids.length > 1 ? ` (${ids.length} overloads)` : ''}\n${count === 1 ? 'One code path' : `${count} code paths`}, from the entry point down${org ? ` · ${org}` : ''}`;

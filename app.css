@@ -854,3 +854,15 @@ button.chip:hover { color: var(--text); }
 .lb-err { color: var(--bad, #dc2626) !important; }
 @media (prefers-color-scheme: dark) { .lb-chip { color: #5eead4; } }
 .lb-loading .lg-spinner { width: 13px; height: 13px; }
+
+/* Code Flow field trace: Show All · Writes · Reads · Outside Apex */
+.access-filter { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); }
+.af-label { padding: 0 6px 0 8px; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+.af-opt { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border: 0; border-radius: 7px; background: none; color: var(--muted); font-size: 12px; cursor: pointer; }
+.af-opt:hover { color: var(--text); }
+.af-opt[aria-checked="true"] { background: var(--panel); color: var(--text); box-shadow: var(--shadow); font-weight: 600; }
+.af-opt.k-write[aria-checked="true"] { color: var(--write); }
+.af-opt.k-read[aria-checked="true"] { color: var(--read); }
+.af-opt.k-outside[aria-checked="true"] { color: var(--e-flow); }
+.af-n { font: 600 10.5px/15px var(--mono); padding: 0 5px; border-radius: 99px; background: var(--panel-2); color: var(--muted); }
+.af-opt[aria-checked="true"] .af-n { background: var(--accent-soft); }

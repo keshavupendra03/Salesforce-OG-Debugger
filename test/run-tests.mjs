@@ -975,4 +975,64 @@ test('custom labels are marked for hover in Apex, LWC, Aura and Visualforce', ()
   assert.deepEqual(labelsOf(syntaxLines('<ui:outputText value="{!$Label.c.Greeting}"/> {!$Label.VF_Title}', 'markup')[0]), ['Greeting', 'VF_Title']);
 });
 
+test('entry paths: every target method gets its share, and trigger-framework dead ends use none of it', () => {
+  const a = byLabel('AccountService.normalizeIndustry()');
+  const b = byLabel('OpportunityService.closeStale()');
+  const roots = (paths) => new Set(paths.map((p) => p.ids[p.ids.length - 1]));
+  // a tiny budget used to be spent on the first method alone; now both get paths
+  const small = idx.entryPaths([a.id, b.id], { maxPaths: 1 });
+  assert.ok(roots(small.paths).has(a.id) && roots(small.paths).has(b.id), 'both methods have entry paths');
+  // paths a trigger framework can't take are kept (to be listed as "not counted") but don't count
+  const all = idx.entryPaths([a.id, b.id], {}).paths.filter((p) => p.end === 'entry');
+  const marked = idx.entryPaths([a.id, b.id], { isUnlikely: (ids) => ids[ids.length - 1] === a.id }).paths.filter((p) => p.end === 'entry');
+  assert.equal(marked.length, all.length);
+});
+
+const CD = await import('../src/compare/diff.js');
+const { parseUnit: parseApex } = await import('../src/apex/parser.js');
+
+test('code compare: line diff, moved sections (even with small edits), edits in place, words, methods, unified text', () => {
+  const A = ['public class Svc {', '    public void one() {', "        System.debug('one');", '        update accs;', '    }', '',
+    '    public void two(List<Account> accs) {', '        for (Account a : accs) {', "            a.Name = 'x';", '        }', '    }', '',
+    '    public void three() {', '        Integer i = 1;', '    }', '}'];
+  const B = ['public class Svc {', '    public void two(List<Account> records) {', '        for (Account a : records) {', "            a.Name = 'x';", '        }', '    }', '',
+    '    public void one() {', "        System.debug('one!');", '        update accs;', '    }', '',
+    '    public void three() {', '        Integer i = 1;', '        Integer j = 2;', '    }', '}'];
+  const opts = { ignoreWhitespace: true, lang: 'apex' };
+  const ops = CD.diffLines(CD.lineKeys(A, opts), CD.lineKeys(B, opts));
+  // every line of both sides is accounted for, in order
+  assert.deepEqual(ops.filter((o) => o[1] != null).map((o) => o[1]), A.map((_, i) => i));
+  assert.deepEqual(ops.filter((o) => o[2] != null).map((o) => o[2]), B.map((_, i) => i));
+  const { rows } = CD.alignRows(ops);
+  const mv = CD.findMoves(rows, A, B);
+  // two() moved to the top (with a renamed parameter): one moved section, A lines 7-12 → B lines 2-7
+  assert.equal(mv.moves.length, 1);
+  assert.deepEqual([mv.moves[0].a0, mv.moves[0].b0], [6, 1]);
+  // the edited debug line is a change in place, not a move
+  const edited = rows.find((r) => r.a === 2);
+  assert.equal(edited.kind, 'chg');
+  assert.ok(!mv.aMove.has(2));
+  const wd = CD.wordDiff(A[2], B[8]);
+  assert.ok(wd.similar);
+  assert.equal(B[8].slice(...wd.b[0]), '!');
+  // methods: the one that moved is two(), the others changed
+  const eqA = new Set(ops.filter((o) => o[0] === 0).map((o) => o[1]));
+  const ms = CD.methodSummary(parseApex({ name: 'Svc', kind: 'class', body: A.join('\n') }), parseApex({ name: 'Svc', kind: 'class', body: B.join('\n') }), (l) => CD.lineKeys(l, opts), eqA);
+  assert.deepEqual(Object.fromEntries(ms.map((m) => [m.label, m.status])), { 'one()': 'changed', 'two(List<Account>)': 'moved+changed', 'three()': 'changed' });
+  // two similar lines each edited in their own place are not "moved" into each other
+  const X = ['a();', "this.dispatchEvent(new ShowToastEvent({ title: 'Can’t close', message: M, variant: 'error' }));", 'b();', 'c();', 'd();', "this.dispatchEvent(new ShowToastEvent({ title: 'Close failed', message: e.body?.message, variant: 'error' }));", 'e();'];
+  const Y = ['a();', "this.dispatchEvent(new ShowToastEvent({ title: 'Error', message: M, variant: 'error' }));", 'b();', 'c();', 'd();', "this.dispatchEvent(new ShowToastEvent({ title: 'Close failed', message: 'Unknown', variant: 'error' }));", 'e();'];
+  const r2 = CD.alignRows(CD.diffLines(X, Y)).rows;
+  assert.equal(CD.findMoves(r2, X, Y).moves.length, 0);
+  // ignore options
+  assert.deepEqual(CD.lineKeys(['  Foo  bar // note', '/* a', 'b */ x'], { ignoreWhitespace: true, ignoreCase: true, ignoreComments: true, lang: 'apex' }), ['foo bar', '', 'x']);
+  assert.deepEqual(CD.lineKeys(["String s = 'http://x'; // c"], { ignoreComments: true }), ["String s = 'http://x';"]);
+  // unified text
+  const u = CD.unifiedDiff(['a', 'b', 'c'], ['a', 'B', 'c'], CD.diffLines(['a', 'b', 'c'], ['a', 'B', 'c']), { aName: 'prod/X.cls', bName: 'uat/X.cls' });
+  assert.equal(u, '--- prod/X.cls\n+++ uat/X.cls\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c');
+  // fingerprints ignore line endings and trailing spaces
+  assert.equal(CD.fingerprint('a  \r\nb\n'), CD.fingerprint('a\nb'));
+  assert.notEqual(CD.fingerprint('a\nb'), CD.fingerprint('a\nc'));
+});
+
 console.log(`\n${passed} tests passed`);

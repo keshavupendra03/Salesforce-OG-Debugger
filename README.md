@@ -33,6 +33,10 @@ src/apex/analyzer.js call graph + field reference classifier + entry-path search
 src/app.js           UI: object/field pickers, call tree, entry paths, source view
 ```
 
+Tracing a field, **Show: All · Writes · Reads · Outside Apex** narrows the call tree and the entry paths to code
+that sets the field, reads it (in SOQL or in code, including code that also writes it), or to the Flows, rules,
+formulas and components that use it. Copied paths say which filter was on; the choice is remembered.
+
 ### What it detects
 
 | Pattern | Example | Result |
@@ -117,6 +121,8 @@ Switch to **Debug Logs** in the top bar (demo: `app.html?demo=1&view=logs`).
   (target user, extra users, Automated Process) and a gap (2–60 s); logs closer together than the gap are grouped.
   Tick the logs you want and **Open N as one**: every tab then works on the merged session, with `T1…Tn` markers,
   a transaction timeline, a cross-transaction trail on each error path, and governor limits per transaction.
+  Logs on their own have a tick box too: tick logs from different sessions (or lone logs) and a bar offers
+  **Open N as one** for all of them together, in the order they ran (**Clear** unticks everything).
 - **Field Trace:** "where is this field being updated?" for one real execution. Trace a user, reproduce, open the
   session, pick Object + Field. Combines the Code Flow scan (methods that ran and read/write the field) with the
   log itself (`VARIABLE_ASSIGNMENT` values at Apex Code FINEST, workflow field updates, flows, validation rules,
@@ -325,6 +331,40 @@ src/explorer/code-tools.js   folding, selection highlights, indent guides, stick
 src/explorer/syntax.js       colours for LWC / Aura JavaScript, CSS and markup
 src/explorer/doc-store.js    the documents (and where a future save would write)
 src/explorer/explorer-ui.js  the view
+```
+
+## OG Code Compare
+
+**OG Code Compare** in the top bar (demo: `app.html?demo=1&view=compare`) compares Apex classes, triggers,
+Visualforce pages and components, LWC and Aura between two orgs this browser is logged into, typically one family
+(production, UAT, preprod… share a My Domain and are grouped together).
+
+- **Pick A and B** at the top: orgs come from your browser's Salesforce logins (like The Informant), with their
+  status; an expired one has **Log in ↗**. ⇄ swaps them, ↻ Reload reads both again after a deployment.
+- **What differs** on the left: Changed · Only in A · Only in B · Same (hidden by default), by type, with a filter.
+  Apex differences come straight from Salesforce's checksums (BodyCrc, no download); Visualforce, LWC and Aura are
+  read and checked in the background.
+- **The diff:** side by side or inline, with:
+  - **Moved sections** marked as moved (not as a deletion plus an addition), even if a variable was renamed
+    inside them; "↕ moved to line 21" jumps to where it went.
+  - **Changed words** highlighted inside edited lines; next / previous change (↑ ↓, Alt+↑/↓, N / P) and an
+    overview ruler of the whole file.
+  - **Ignore** whitespace (on by default), case, comments; Wrap; Only changes (unchanged code folds into "⋯ N
+    unchanged lines").
+  - **Methods** (Apex): which were changed, added, removed or moved; click one to go there.
+- **Each side** shows who changed it last and when (the newer side is marked), API version and size, with
+  **Copy class / Copy file**, **Open in OG Explorer** (the side that is this tab's org) and **Setup ↗**.
+  **Copy diff** copies a unified diff for a ticket or code review.
+- **Custom labels:** hover one in the diff to see its value in both orgs, flagged when they differ.
+- The code look (OG / Developer Console / VS Code) is the same setting as OG Explorer's.
+- **Room for the diff:** the list folds into a slim rail (its edge button or Ctrl+B), and **⌃ Hide details** in the
+  toolbar hides the name, both orgs' cards and the methods, leaving only the toolbar and the diff (remembered).
+  The change ruler sits beside the scrollbar.
+
+```
+src/compare/diff.js             line diff (patience + LCS), moves, word diff, unified text, method summary (tested)
+src/compare/compare-sources.js  reading code from any logged-in org; the demo orgs' code
+src/compare/compare-ui.js       the view
 ```
 
 ## The OG Executor (run Batch, Queueable, Schedulable and Anonymous Apex)

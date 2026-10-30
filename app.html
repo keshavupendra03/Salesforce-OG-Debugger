@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="exec.css">
   <link rel="stylesheet" href="import.css">
   <link rel="stylesheet" href="explorer.css">
+  <link rel="stylesheet" href="compare.css">
 </head>
 <body>
   <header class="topbar">
@@ -29,6 +30,7 @@
       <button role="tab" data-app-view="api" aria-selected="false" id="nav-api" disabled title="The Informant: an API client (collections, environments, cURL import)">The Informant</button>
       <button role="tab" data-app-view="exec" aria-selected="false" id="nav-exec" disabled title="The OG Executor: run Batch, Queueable and Schedulable Apex, or any Anonymous Apex">The OG Executor</button>
       <button role="tab" data-app-view="explorer" aria-selected="false" id="nav-explorer" disabled title="OG Explorer: read classes, triggers, LWC, Aura and Visualforce; click a call to jump to it">OG Explorer</button>
+      <button role="tab" data-app-view="compare" aria-selected="false" id="nav-compare" disabled title="OG Code Compare: compare Apex, triggers, Visualforce, LWC and Aura between your orgs (production, UAT, preprod…)">OG Code Compare</button>
     </nav>
     <div class="org" id="org"></div>
     <div class="scan" id="scan">
@@ -121,6 +123,7 @@
   <main class="ox" id="view-exec" hidden></main>
 
   <main class="cx" id="view-explorer" hidden></main>
+  <main class="cc" id="view-compare" hidden></main>
 
   <footer class="credits" aria-label="About this extension">
     <div class="credits-brand">

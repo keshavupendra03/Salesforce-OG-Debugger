@@ -39,7 +39,46 @@ export function installLabelHover(loadLabels) {
 }
 
 /** Forget the labels (after a rescan, or when the org changes). */
-export function resetLabels() { labels = null; }
+export function resetLabels() { labels = null; for (const s of orgSources.values()) s.map = null; }
+
+// ---------- several orgs side by side (OG Code Compare) ----------
+// Code inside an element with data-label-orgs="host1,host2" shows the label's value in each of those orgs.
+const orgSources = new Map(); // host → { name, load, map }
+export function registerOrgLabels(host, name, loadFn) { orgSources.set(host, { name, load: loadFn, map: null }); }
+const orgAll = (src) => {
+  src.map ||= Promise.resolve(src.load()).then((list) => new Map(list.map((l) => [l.name.toLowerCase(), l])));
+  src.map.catch(() => { src.map = null; });
+  return src.map;
+};
+const valueOf = (l) => l?.lines?.find((x) => x.label === 'Value')?.text ?? '';
+function copyBtn(text) {
+  const b = h('button', { class: 'ghost small', onclick: async () => {
+    try { await navigator.clipboard.writeText(text); b.textContent = '✓ Copied'; } catch { b.textContent = 'Copy failed'; }
+    setTimeout(() => { b.textContent = '⧉ Copy'; }, 1400);
+  } }, '⧉ Copy');
+  return b;
+}
+
+async function showOrgs(el, name, hosts, mine) {
+  const results = await Promise.all(hosts.map(async (host) => {
+    const src = orgSources.get(host);
+    try { return { src, l: (await orgAll(src)).get(name.toLowerCase()) || null }; } catch (e) { return { src, err: e.message }; }
+  }));
+  if (card !== mine) return;
+  const seen = new Set(results.filter((r) => !r.err).map((r) => (r.l ? valueOf(r.l) : '\u0000none')));
+  const differ = seen.size > 1;
+  card.classList.add('lb-multi');
+  card.replaceChildren(
+    h('div', { class: 'lb-head' }, h('span', { class: 'lb-chip' }, 'Custom label'), h('b', {}, results.find((r) => r.l)?.l.name || name),
+      differ ? h('span', { class: 'lb-diff' }, 'Different in these orgs') : h('span', { class: 'lb-same' }, 'Same in both')),
+    ...results.map((r) => h('div', { class: 'lb-org' },
+      h('div', { class: 'lb-org-head' }, h('span', { class: 'lb-org-name' }, r.src.name),
+        ...[r.l ? copyBtn(valueOf(r.l)) : null, r.l?.link ? h('a', { class: 'lb-setup', href: r.l.link, target: '_blank', rel: 'noopener' }, 'Setup ↗') : null].filter(Boolean)),
+      r.err ? h('small', { class: 'lb-err' }, `Couldn’t read the labels: ${r.err}`)
+        : r.l ? h('div', { class: `lb-value${valueOf(r.l) ? '' : ' empty'}` }, valueOf(r.l) || '(empty)')
+          : h('small', { class: 'lb-missing' }, 'Not in this org'))));
+  place(el);
+}
 
 function all() {
   labels ||= Promise.resolve(load?.() || []).then((list) => new Map(list.map((l) => [l.name.toLowerCase(), l])));
@@ -59,6 +98,8 @@ async function show(el) {
   anchor = el;
   document.body.append(card);
   place(el);
+  const hosts = el.closest('[data-label-orgs]')?.dataset.labelOrgs?.split(',').filter((x) => orgSources.has(x));
+  if (hosts?.length) { await showOrgs(el, name, hosts, mine); return; }
   let found;
   try {
     found = (await all()).get(name.toLowerCase());

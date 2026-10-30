@@ -510,6 +510,7 @@ function renderTools() {
       tool('search', '🔎', 'FBI Search', 'Full-Base Inspector: got an error on this page? Find which Apex, flow or rule says it'),
       tool('api', '🕴️', 'The Informant', 'API client: collections, environments, cURL import, your Salesforce session'),
       tool('explorer', '🗂', 'OG Explorer', 'Read classes, triggers, LWC, Aura and Visualforce; click a call to jump to it'),
+      tool('compare', '⇄', 'OG Code Compare', 'Compare Apex, Visualforce, LWC and Aura between production, UAT, preprod…'),
       tool('exec', '😎', 'The OG Executor', 'Run Batch, Queueable and Schedulable Apex or any Anonymous Apex, and watch the jobs')));
 }
 

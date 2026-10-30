@@ -435,25 +435,43 @@ export class CodeIndex {
   }
 
   /** All code paths from an entry point (or a method nobody calls) down to each root method. */
+  // opts.isUnlikely(ids) → true for an entry path a trigger framework would never take (see src/apex/dispatch.js):
+  // those are still returned (to be listed as "not counted") but don't use up the budget.
+  // The budget is shared fairly: every target method gets its own share, so one method reached from dozens of
+  // triggers can't crowd out the others.
   entryPaths(rootIds, opts = {}) {
     const maxPaths = opts.maxPaths ?? 400;
     const maxDepth = opts.maxDepth ?? 15;
+    const perRoot = Math.max(30, Math.floor(maxPaths / Math.max(1, rootIds.length)));
+    const maxUnlikely = opts.maxUnlikely ?? 600;
+    let steps = opts.maxSteps ?? 400000; // simple paths can multiply quickly in big orgs: a hard stop
     const paths = [];
     let truncated = false;
+    let unlikely = 0;
     for (const rootId of rootIds) {
       const stack = [rootId];
+      let mine = 0;
+      const add = (end) => {
+        const p = { ids: [...stack].reverse(), end };
+        if (end === 'entry' && opts.isUnlikely?.(p.ids)) {
+          if (unlikely < maxUnlikely) { unlikely++; paths.push(p); }
+          return;
+        }
+        paths.push(p);
+        mine++;
+      };
       const dfs = (id) => {
-        if (paths.length >= maxPaths) { truncated = true; return; }
+        if (mine >= perRoot || --steps <= 0) { truncated = true; return; }
         const m = this.methodsById.get(id);
         const callers = this.callers(id, opts);
         if (m.entry && ROOT_ENTRY_KINDS.has(m.entry.kind)) {
-          paths.push({ ids: [...stack].reverse(), end: 'entry' });
+          add('entry');
         } else if (!callers.length) {
-          paths.push({ ids: [...stack].reverse(), end: 'orphan' });
+          add('orphan');
           return;
         }
         if (stack.length >= maxDepth) {
-          if (!(m.entry && ROOT_ENTRY_KINDS.has(m.entry.kind))) paths.push({ ids: [...stack].reverse(), end: 'depth' });
+          if (!(m.entry && ROOT_ENTRY_KINDS.has(m.entry.kind))) add('depth');
           return;
         }
         for (const c of callers) {
